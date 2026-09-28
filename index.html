@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>torete — portfolio</title>
+<meta name="description" content="Portfolio of Hugo (torete). Security researcher working on Windows internals, reverse engineering, malware analysis and low-level C/C++ development." />
+<meta name="theme-color" content="#0a0a0b" />
+
+<meta property="og:type" content="website" />
+<meta property="og:title" content="torete — portfolio" />
+<meta property="og:description" content="Security researcher. Windows internals, reverse engineering, low-level C/C++." />
+<meta property="og:image" content="https://avatars.githubusercontent.com/u/329960189?v=4" />
+<meta name="twitter:card" content="summary_large_image" />
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='24' fill='%230a0a0b'/%3E%3Ctext x='50' y='68' font-family='monospace' font-size='58' font-weight='bold' fill='%23a3e635' text-anchor='middle'%3E%3C%2Ftext%3E%3C/svg%3E" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+
+<body>
+<div class="fx-grid" aria-hidden="true"></div>
+<div class="fx-glow" id="fxGlow" aria-hidden="true"></div>
+<div class="fx-progress" id="fxProgress" aria-hidden="true"></div>
+<div class="fx-noise" aria-hidden="true"></div>
+
+<a class="skip" href="#inicio">Skip to content</a>
+
+<header class="nav" id="nav">
+  <div class="wrap nav__inner">
+    <a class="nav__brand" href="#inicio">
+      <span class="nav__dot"></span>
+      <span data-bind="alias">torete</span>
+    </a>
+
+    <nav class="nav__links" id="navLinks">
+      <a href="#blog">blog</a>
+      <a href="#perfil">profile</a>
+      <a href="#sobre">about</a>
+      <a href="#skills">skills</a>
+      <a href="#trayectoria">journey</a>
+      <a href="#proyectos">projects</a>
+      <a href="#contacto">contact</a>
+    </nav>
+
+    <div class="nav__side">
+      <button class="btn btn--ghost btn--sm" id="themeToggle" type="button" aria-label="Toggle theme">◐</button>
+      <button class="btn btn--sm nav__burger" id="burger" type="button" aria-label="Menu">
+        <span></span><span></span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="hero" id="inicio">
+    <div class="wrap hero__inner">
+      <div class="hero__text">
+        <p class="tag reveal">
+          <span class="tag__pulse"></span>
+          <span data-bind="status">open to collaboration</span>
+        </p>
+
+        <h1 class="hero__title reveal">
+          <span class="hero__pre">i'm</span>
+          <span class="hero__alias" data-bind="alias">torete</span>
+        </h1>
+
+        <p class="hero__name reveal">
+          <span data-bind="nombre">Hugo</span>
+          <span class="hero__sep">/</span>
+          <span class="mono" data-bind="role">Security Researcher</span>
+        </p>
+
+        <p class="hero__bio reveal" data-bind="bio"></p>
+
+        <div class="hero__cta reveal">
+          <a class="btn btn--solid" href="#proyectos" data-bind="ctaPrimary">view projects</a>
+          <a class="btn btn--ghost" href="#contacto" data-bind="ctaSecondary">get in touch</a>
+        </div>
+
+        <ul class="socials reveal" id="socials"></ul>
+      </div>
+
+      <div class="hero__card reveal">
+        <a class="avatar" href="https://github.com/toreto67" target="_blank" rel="noopener">
+          <img src="https://avatars.githubusercontent.com/u/329960189?v=4" alt="toreto67" width="72" height="72" />
+        </a>
+        <div class="card window">
+          <div class="window__bar">
+            <span class="dot dot--r"></span>
+            <span class="dot dot--y"></span>
+            <span class="dot dot--g"></span>
+            <span class="window__title mono" data-bind="alias">torete.sh</span>
+          </div>
+          <pre class="terminal mono" id="terminal"></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="marquee" aria-hidden="true">
+      <div class="marquee__track mono" id="marquee"></div>
+    </div>
+  </section>
+
+  <section class="section section--blog" id="blog">
+    <div class="wrap">
+      <header class="section__head reveal">
+        <span class="section__num mono">01</span>
+        <h2 class="section__title">My RE Blog</h2>
+        <p class="section__sub">Long-form reverse engineering write-ups, published in full.</p>
+      </header>
+      <div class="posts" id="posts"></div>
+    </div>
+  </section>
+
+  <section class="section" id="perfil">
+    <div class="wrap">
+      <header class="section__head reveal">
+        <span class="section__num mono">02</span>
+        <h2 class="section__title">Profile</h2>
+        <p class="section__sub">A quick snapshot of who I am.</p>
+      </header>
+      <div class="facts" id="facts"></div>
+    </div>
+  </section>
+
+  <section class="section" id="sobre">
+    <div class="wrap">
+      <header class="section__head reveal">
+        <span class="section__num mono">03</span>
+        <h2 class="section__title" data-bind="aboutTitle">More than just code</h2>
+      </header>
+
+      <div class="about">
+        <div class="about__text reveal" data-bind="about"></div>
+        <div class="about__side reveal">
+          <div class="interests" id="interests"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="skills">
+    <div class="wrap">
+      <header class="section__head reveal">
+        <span class="section__num mono">04</span>
+        <h2 class="section__title">Skills</h2>
+        <p class="section__sub">What I work with, and what I'm still getting better at.</p>
+      </header>
+      <div class="skills" id="skillsGrid"></div>
+    </div>
+  </section>
+
+  <section class="section" id="trayectoria">
+    <div class="wrap">
+      <header class="section__head reveal">
+        <span class="section__num mono">05</span>
+        <h2 class="section__title">Journey</h2>
+        <p class="section__sub">How I got here.</p>
+      </header>
+      <ol class="timeline" id="timeline"></ol>
+    </div>
+  </section>
+
+  <section class="section" id="proyectos">
+    <div class="wrap">
+      <header class="section__head reveal">
+        <span class="section__num mono">06</span>
+        <h2 class="section__title">Projects</h2>
+        <p class="section__sub">Selected work — tools I wrote to solve my own problems.</p>
+      </header>
+      <div class="projects" id="projects"></div>
+      <div class="center reveal">
+        <a class="btn btn--ghost" href="https://github.com/toreto67" target="_blank" rel="noopener">see all repositories</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section--contact" id="contacto">
+    <div class="wrap">
+      <header class="section__head reveal">
+        <span class="section__num mono">07</span>
+        <h2 class="section__title">Contact</h2>
+        <p class="section__sub">Want to talk about a project, ask something technical, or just say hi? I'm around.</p>
+      </header>
+      <div class="contacts" id="contacts"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap footer__inner">
+    <p class="mono">© <span id="year">2026</span> <span data-bind="alias">torete</span></p>
+    <p class="mono footer__note">handmade · no frameworks</p>
+    <a class="mono" href="#inicio">back to top ↑</a>
+  </div>
+</footer>
+
+<script src="assets/script.js"></script>
+</body>
+</html>

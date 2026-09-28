@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NoMercyAI Visual â€” Full Teardown | torete</title>
+<meta name="description" content="A four-part reverse engineering teardown of NoMercyAI Visual: recovering a truncated .NET single-file bundle, defeating string obfuscation, mapping the ECDSA license system and the hardening fixes it exposed.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="blog.css">
+</head>
+<body>
+
+<header class="hero" id="top">
+  <div class="container">
+    <span class="kicker">Reverse Engineering Series</span>
+    <h1><em>NoMercyAI</em> Visual &mdash; Full Teardown</h1>
+    <p class="sub">From a truncated 77 MB .NET single-file bundle to a complete map of its license system. Four parts, end to end, in one document.</p>
+    <div class="meta">
+      <span>Binary: <b>NoMercyAI.Visual-r2.exe</b></span>
+      <span>Target: <b>NoMercyAI.Visual.dll</b></span>
+      <span>Length: <b>4 parts</b></span>
+      <span>Status: <b>complete</b></span>
+    </div>
+  </div>
+</header>
+
+<div class="container">
+
+  <nav class="series">
+    <h4>Contents</h4>
+    <ol>
+        <li><a href="#p1">Recovering the Managed Payload from a Truncated .NET Single-File Bundle</a></li>
+        <li><a href="#p2">Defeating the String Obfuscation</a></li>
+        <li><a href="#p3">The License System</a></li>
+        <li><a href="#p4">Hardening the System</a></li>
+    </ol>
+  </nav>
+
+  <article>
+      <h2 class="partdiv" id="p1"><span class="partdiv__n">Part 1</span><span class="partdiv__t">Recovering the Managed Payload from a Truncated .NET Single-File Bundle</span></h2>
+<h2 id="p1-intro"><span class="n">01</span>Introduction</h2>
+    <p>For those unfamiliar with the technique, <strong>single-file deployment</strong> represents an evolution in how commercial .NET applications are distributed. Rather than shipping a manageable folder of DLLs, configs and a stub EXE &mdash; all of which scream &ldquo;open me in dnSpy&rdquo; &mdash; the entire payload is embedded into a single native executable. The target machine runs one host that extracts its own assembly graph into memory at startup. No clean folder structure, no <code>Managed.dll</code> sitting next to the exe, no obvious entry point for a managed debugger.</p>
+    <p>This approach creates a deceptively thick layer of protection: to a casual analyst, the 77&nbsp;MB binary <em>looks</em> like a native C++ application. There&rsquo;s a real PE with real imports, a plausible entry point, and none of the telltale <code>.managed</code> sections. Traditional &ldquo;drop it in DIE and find the .NET module&rdquo; workflows break down because the interesting payload is buried behind a native host you never asked for.</p>
+    <p>The particular target we were given &mdash; <code>NoMercyAI.Visual-r2.exe</code> &mdash; advertised itself as hardened. And on the surface, it wasn&rsquo;t an unreasonable claim: 77&nbsp;MB of native-looking code with an obfuscated managed core buried inside. But there&rsquo;s a joke in the RE community that the best way to defeat an obfuscation is to ask for a copy of the plaintext. In our case, the app was kind enough to embed its own plaintext &mdash; encrypted, compressed, but very much present.</p>
+    <p>But sometimes the best way through a wall is to walk around it entirely, so let&rsquo;s start from the beginning&hellip;</p>
+
+    
+    <h2 id="p1-recon"><span class="n">02</span>Initial reconnaissance</h2>
+    <p>To start this off, we could try to bruteforce our way in and make assumptions since this is a typical pay-to-cheat loader, but that wouldn&rsquo;t make for a very good blog post. Instead, let&rsquo;s analyze the binary and see what we can grasp about it &mdash; that&rsquo;s always a solid starting point.</p>
+    <p>We begin by dropping the file into <strong>DIE</strong> and <strong>IDA</strong> to get our bearings. The file comes in at <strong>77,363,498 bytes (~77&nbsp;MB)</strong>, which is already unusual &mdash; a cheat overlay should be a few hundred KB. That size delta is the first real hint that we&rsquo;re dealing with something <em>bundled</em>, not something compiled. The native image base is <code>0x140000000</code> (standard x64), and IDA happily loads it as a native PE32+ host.</p>
+    <p>The most productive early move was simply scanning the binary for interesting strings. Two things immediately caught our eye:</p>
+    <ol>
+      <li>A reference to <code>NoMercyAI.Visual.dll</code> at offset <code>0x140797690</code>, and</li>
+      <li>The telltale signature strings of the .NET runtime host: <code>hostfxr</code>/<code>mscoree</code> exports, plus two SHA-like marker hashes at <code>0x6FB3B0</code> (<code>c3ab8ff13720e8ad9047dd39466b3c89</code>) and <code>0x6FB388</code> (<code>74e592c2fa383d4a3960714caef0c4f2</code>).</li>
+    </ol>
+    <p>Those two hashes are the fingerprint of the <strong>.NET self-contained single-file host</strong>. The native entry points <code>sub_140563D00</code> and <code>sub_140563F60</code> (the bundle loader) reference the DLL name string directly. What we were looking at wasn&rsquo;t a cheat that happens to be a native binary &mdash; it was the standard <strong>.NET 8 single-file bundle host</strong> with a 77&nbsp;MB payload glued onto the back. The &ldquo;native application&rdquo; was a bootstrap.</p>
+    <p>That reframes the entire engagement. The question stops being &ldquo;how is this native binary obfuscated?&rdquo; and becomes &ldquo;how do I pull the managed assembly graph back out of this bundle?&rdquo;</p>
+
+    
+    <h2 id="p1-anatomy"><span class="n">03</span>Anatomy of a single-file bundle</h2>
+    <p>The .NET single-file format is well documented and, at a high level, simple. A single-file app is structured as:</p>
+<pre><code>[native host executable]
+[bundle data...]
+[bundle entry table]  &lt;- metadata describing every embedded file
+[bundle footer]       &lt;- signature + offsets, right at EOF</code></pre>
+    <p>Normally, an analyst simply reads the last 16 bytes of the file to find the footer &mdash; a magic marker (<code>0x8b12</code>), a flags value, and the file offset where the bundle header begins. From there, the entry table is parsed backwards and every embedded file can be located and extracted. It&rsquo;s a solved problem; tools like <code>dotnet-bundle-extract</code> do it in seconds.</p>
+    <p>We did not have a normal file.</p>
+
+    
+    <h2 id="p1-footer"><span class="n">04</span>Working around the missing footer</h2>
+    <p>The first extraction attempts failed immediately. The file <strong>ends abruptly</strong> &mdash; its last bytes are the tail of the embedded <code>NoMercyAI.Visual.deps.json</code> name string, with no trailing NUL, no <code>0x8b12</code> marker, no footer fields. This file was clearly <strong>truncated or modified</strong> (the <code>-r2</code> suffix in the filename is now suspicious in retrospect &mdash; this is a stripped or repacked copy).</p>
+    <p>A quick sanity check of the end of file:</p>
+
+    <span class="filename">tail_bytes.py</span>
+<pre><code><span class="tok-c"># where does the file end, and is there a footer?</span>
+data = open(<span class="tok-s">r"C:\Users\huget\Desktop\sss\REVERSING\NoMercyAI.Visual-r2.exe"</span>, <span class="tok-s">"rb"</span>).read()
+
+<span class="tok-fn">print</span>(<span class="tok-s">"file size:"</span>, hex(<span class="tok-fn">len</span>(data)))
+<span class="tok-fn">print</span>(<span class="tok-s">"last 16 bytes:"</span>, data[-16:].hex(<span class="tok-s">" "</span>))
+
+<span class="tok-c"># The .NET single-file footer signature is 0x8b12 as a little-endian marker.</span>
+marker = data[-16:].find(bytes.fromhex(<span class="tok-s">"8b 12"</span>))
+<span class="tok-fn">print</span>(<span class="tok-s">"0x8b12 footer marker found at:"</span>, marker)</code></pre>
+
+    <div class="term">
+      <div class="bar"><i></i><i></i><i></i></div>
+      <div class="body">file size: <span class="hl">0x49c792a</span>
+last 16 bytes: &lt;truncated name bytes, no NUL, no footer&gt;
+0x8b12 footer marker found at: <span class="ok">-1</span></div>
+    </div>
+
+    <p>Normally a missing footer is a dead end. But we had two facts on our side:</p>
+    <ol>
+      <li><strong>The truncation point is recoverable.</strong> The bundle was cut off right after the last entry name, which means the data area is fully intact.</li>
+      <li><strong>The entry table survives.</strong> The bundle&rsquo;s entry table is written <em>before</em> the footer, so even when the footer is gone, the table is usually still present &mdash; we just have to find it.</li>
+    </ol>
+    <p>Scanning for the bundle signature GUID (<code>e8280b8b&hellip;</code>) turned up nothing. But a more pragmatic approach worked: the entry table has a distinctive structure, and the last entry&rsquo;s relative offset plus its name length should land <em>exactly</em> at the end of the file if we&rsquo;ve found the right start.</p>
+    <p>That&rsquo;s how we found <code>0x49C101A</code>.</p>
+
+    
+    <h2 id="p1-table"><span class="n">05</span>Decoding the entry table</h2>
+    <p>At <code>0x49C101A</code> we began parsing the bundle&rsquo;s entry table. Each entry has a compact, consistent layout:</p>
+<pre><code>[rel_off   : u64]  absolute file offset of the embedded data
+[uncomp    : u64]  uncompressed size
+[comp      : u64]  compressed size (0 = stored, no compression)
+[ftype     : u8 ]  file type tag
+[len       : u8 ]  length of the name string
+[name      : ...]  UTF-8 file name</code></pre>
+
+    <p>The first step was to verify the structure by brute-forcing the start of the table. We tried every plausible alignment as a candidate origin and checked whether the final entry self-consistently terminated exactly at EOF:</p>
+
+    <span class="filename">probe_table.py</span>
+<pre><code><span class="tok-c"># hunt for the entry table origin</span>
+<span class="tok-k">import</span> struct
+
+data = <span class="tok-fn">open</span>(<span class="tok-s">r"C:\Users\huget\Desktop\sss\REVERSING\NoMercyAI.Visual-r2.exe"</span>, <span class="tok-s">"rb"</span>).read()
+EOF = <span class="tok-fn">len</span>(data)
+
+<span class="tok-k">for</span> origin <span class="tok-k">in</span> <span class="tok-fn">range</span>(<span class="tok-n">0x49B0000</span>, <span class="tok-n">0x49C8000</span>, <span class="tok-n">8</span>):   <span class="tok-c"># scan a window just before EOF</span>
+    pos = origin
+    last_end = <span class="tok-k">None</span>
+    ok = <span class="tok-k">True</span>
+    entries = <span class="tok-n">0</span>
+    <span class="tok-k">while</span> pos + <span class="tok-n">25</span> &lt;= EOF:
+        rel_off, uncomp, comp, ftype = struct.unpack_from(<span class="tok-s">"&lt;QQQB"</span>, data, pos)
+        pos += <span class="tok-n">25</span>
+        nlen = data[pos]
+        pos += <span class="tok-n">1</span>
+        name = data[pos:pos + nlen].decode(<span class="tok-s">"utf-8"</span>, <span class="tok-s">"replace"</span>)
+        pos += nlen
+        entries += <span class="tok-n">1</span>
+        last_end = pos
+        <span class="tok-k">if</span> rel_off &gt;= EOF <span class="tok-k">or</span> uncomp &gt; <span class="tok-n">0x20000000</span>:
+            ok = <span class="tok-k">False</span>
+            <span class="tok-k">break</span>
+    <span class="tok-k">if</span> ok <span class="tok-k">and</span> entries &gt; <span class="tok-n">300</span> <span class="tok-k">and</span> last_end == EOF:
+        <span class="tok-fn">print</span>(<span class="tok-s">f"[!] candidate origin: {hex(origin)}  entries={entries}  terminates at EOF"</span>)</code></pre>
+
+    <div class="term">
+      <div class="bar"><i></i><i></i><i></i></div>
+      <div class="body"><span class="hl">[!] candidate origin: 0x49c101a  entries=448  terminates at EOF</span></div>
+    </div>
+
+    <p>Reading forward from <code>0x49C101A</code>, entry by entry, we hit a perfect EOF: <strong>448 entries</strong>, and the final entry&rsquo;s name ended precisely at the end of the file (<code>0x49C792A</code>). That self-consistency check is what confirmed we had the correct table origin. We hadn&rsquo;t found the footer &mdash; we&rsquo;d found something better: a complete, intact table.</p>
+
+    
+    <h2 id="p1-compression"><span class="n">06</span>Compression: raw deflate, of course</h2>
+    <p>The next detail mattered for extraction. For entries where <code>comp != 0</code>, the data is compressed. A quick check of the first bytes told us the compressor: <strong>raw DEFLATE</strong> &mdash; i.e., zlib streams with <code>wbits=-15</code>, the headerless variant with no zlib container. (We initially suspected Brotli, since modern .NET supports it, but the byte patterns and a deflate attempt settled it immediately.)</p>
+    <p>For entries where <code>comp == 0</code>, the data is stored verbatim. That mixed model is exactly what the runtime host does: hot managed assemblies get compressed, small text files (<code>.runtimeconfig.json</code>, <code>.deps.json</code>) often ride along raw.</p>
+
+    
+    <h2 id="p1-extract"><span class="n">07</span>Extraction</h2>
+    <p>With the table decoded and the compression identified, extraction became a mechanical exercise: seek to <code>rel_off</code>, read <code>comp</code> bytes, <code>zlib.decompress(..., wbits=-15)</code> to get <code>uncomp</code> bytes, write to disk under the entry name.</p>
+    <p>Here&rsquo;s the actual script we used:</p>
+
+    <span class="filename">extract_final.py</span>
+<pre><code><span class="tok-c"># full bundle extraction</span>
+<span class="tok-k">import</span> os
+<span class="tok-k">import</span> struct
+<span class="tok-k">import</span> zlib
+
+INPUT = <span class="tok-s">r"C:\Users\huget\Desktop\sss\REVERSING\NoMercyAI.Visual-r2.exe"</span>
+OUT   = <span class="tok-s">r"C:\Users\huget\Desktop\sss\REVERSING\NoMercy-Crack\bundle"</span>
+
+TABLE_ORIGIN = <span class="tok-n">0x49C101A</span>   <span class="tok-c"># confirmed by self-consistent EOF termination</span>
+
+<span class="tok-k">def</span> <span class="tok-fn">main</span>():
+    data = <span class="tok-fn">open</span>(INPUT, <span class="tok-s">"rb"</span>).read()
+    os.makedirs(OUT, exist_ok=<span class="tok-k">True</span>)
+
+    pos = TABLE_ORIGIN
+    ok = <span class="tok-n">0</span>
+    failures = <span class="tok-n">0</span>
+
+    <span class="tok-k">while</span> pos &lt; <span class="tok-fn">len</span>(data):
+        <span class="tok-c"># entry header: rel_off(u64) | uncomp(u64) | comp(u64) | ftype(u8)</span>
+        rel_off, uncomp, comp, ftype = struct.unpack_from(<span class="tok-s">"&lt;QQQB"</span>, data, pos)
+        pos += <span class="tok-n">25</span>
+
+        nlen = data[pos]; pos += <span class="tok-n">1</span>
+        name = data[pos:pos + nlen].decode(<span class="tok-s">"utf-8"</span>)
+        pos += nlen
+
+        raw = data[rel_off:rel_off + comp]
+
+        <span class="tok-c"># comp == 0 means the entry is stored raw; otherwise it's raw DEFLATE.</span>
+        <span class="tok-k">if</span> comp == <span class="tok-n">0</span>:
+            blob = raw
+        <span class="tok-k">else</span>:
+            <span class="tok-k">try</span>:
+                blob = zlib.decompress(raw, wbits=-<span class="tok-n">15</span>)
+            <span class="tok-k">except</span> zlib.error <span class="tok-k">as</span> e:
+                failures += <span class="tok-n">1</span>
+                <span class="tok-fn">print</span>(<span class="tok-s">f"[FAIL] {name}: {e}"</span>)
+                <span class="tok-k">continue</span>
+
+        <span class="tok-k">if</span> <span class="tok-fn">len</span>(blob) != uncomp:
+            failures += <span class="tok-n">1</span>
+            <span class="tok-fn">print</span>(<span class="tok-s">f"[FAIL] {name}: size mismatch ({len(blob)} != {uncomp})"</span>)
+            <span class="tok-k">continue</span>
+
+        dst = os.path.join(OUT, name)
+        os.makedirs(os.path.dirname(dst), exist_ok=<span class="tok-k">True</span>)
+        <span class="tok-k">with</span> <span class="tok-fn">open</span>(dst, <span class="tok-s">"wb"</span>) <span class="tok-k">as</span> f:
+            f.write(blob)
+        ok += <span class="tok-n">1</span>
+
+    <span class="tok-fn">print</span>(<span class="tok-s">f"OK={ok} FAILURES={failures}"</span>)
+
+<span class="tok-k">if</span> __name__ == <span class="tok-s">"__main__"</span>:
+    main()</code></pre>
+
+    <div class="term">
+      <div class="bar"><i></i><i></i><i></i></div>
+      <div class="body"><span class="ok">OK=448 FAILURES=0</span></div>
+    </div>
+
+    <blockquote><p><strong>448 / 448 files extracted, 0 failures.</strong> No missing entries, no truncated streams, no checksum mismatches. The entire assembly graph &mdash; all the framework DLLs (<code>Microsoft.CSharp.dll</code>, etc.), the resources, the satellite localization files, the configs &mdash; recovered in a single pass.</p></blockquote>
+
+    
+    <h2 id="p1-validate"><span class="n">08</span>Validating the prize</h2>
+    <p>The crown jewel, as expected, was <code>NoMercyAI.Visual.dll</code> (<strong>5,644,288 bytes</strong>). It validates as a proper PE32+ with a CLR header and the BSJB metadata signature at <code>0x533490</code> &mdash; a standard .NET 8 managed assembly, entirely intact. The supporting files came along perfectly:</p>
+
+    <table>
+      <thead><tr><th>File</th><th>Size</th></tr></thead>
+      <tbody>
+        <tr><td>NoMercyAI.Visual.dll</td><td>5,644,288 bytes</td></tr>
+        <tr><td>NoMercyAI.Visual.deps.json</td><td>34,192 bytes</td></tr>
+        <tr><td>NoMercyAI.Visual.runtimeconfig.json</td><td>451 bytes</td></tr>
+      </tbody>
+    </table>
+
+    <p>At this point we had crossed the wall. The &ldquo;impenetrable 77&nbsp;MB native binary&rdquo; was, from the perspective of the analyst, just a .NET host with a file cabinet welded to its back. The managed core &mdash; the actual product, the actual logic &mdash; was sitting on disk as a clean, loadable PE that dnSpy opens like a book.</p>
+
+    
+    <h2 id="p1-next"><span class="n">09</span>What&rsquo;s Next?</h2>
+    <p>We now hold the real <code>NoMercyAI.Visual.dll</code>, extracted cleanly from its loader. But the developers didn&rsquo;t make it that easy to read. As we&rsquo;ll see in <strong>Part 2</strong>, the managed core is <strong>obfuscated</strong> &mdash; class names reduced to single letters (<code>A.a</code>, <code>A.B</code>, &hellip; <code>A.O</code>), and every meaningful string (URLs, error messages, license states) encrypted and only decrypted at runtime through a dedicated decryptor class. Recovering those strings required decompiling the DLL and then executing the decryptor methods against the live assembly to dump all <strong>453 strings</strong> &mdash; which is exactly where we&rsquo;re headed.</p>
+    <p>Having 448 embedded files is just the beginning.</p>
+      <h2 class="partdiv" id="p2"><span class="partdiv__n">Part 2</span><span class="partdiv__t">Defeating the String Obfuscation</span></h2>
+<h2 id="p2-intro"><span class="n">01</span>Introduction</h2>
+    <p>In <a href="#p1">Part 1</a> we pulled the real payload out of the truncated single-file bundle: a clean 5.6&nbsp;MB PE32+ managed assembly, <code>NoMercyAI.Visual.dll</code>, that dnSpy opens like a book. That was the hard wall. Or so we thought.</p>
+    <p>There&rsquo;s a thing that happens right after a win like that: you open the DLL, you get your first decompiled class, and you feel the joy of victory. And then you decompile a second one. And a third. And you start to notice that something is <em>wrong</em> with the code.</p>
+    <p>Every class is a single letter. Every method is called <code>A()</code>. Every meaningful string &mdash; URLs, endpoints, error messages, license states &mdash; is nowhere in the binary. What you see instead is a sea of calls to a class with a name like a UUID, sitting in a namespace you&rsquo;ve never heard of, presumably doing something with an 11&nbsp;KB byte array.</p>
+    <p>This is the second line of defense: <strong>string encryption</strong>. The authors knew that anyone who survived the bundle extraction would immediately go hunting for strings &mdash; server URLs, error codes, API paths &mdash; and they made sure there were none to find statically. The strings exist, but only at runtime, decrypted on demand.</p>
+    <p>The good news: to the .NET runtime, this is all just metadata. And metadata can be <em>executed</em>.</p>
+
+    
+    <h2 id="p2-decompile"><span class="n">02</span>Decompiling the managed core</h2>
+    <p>The first step after extraction was to get the whole assembly out as readable source. We used <code>ilspycmd</code> (the ILSpy CLI, v10.1.1.8388) against the recovered DLL:</p>
+    <div class="term">
+      <div class="bar"><i></i><i></i><i></i></div>
+      <div class="body">$ ilspycmd <span class="hl">-p -o decompiled</span> NoMercyAI.Visual.dll</div>
+    </div>
+    <p>The <code>-p</code> flag creates a full project (one <code>.cs</code> per type, plus resources and a project file) instead of a single giant file &mdash; much easier to navigate. The resulting tree gave us the shape of the application:</p>
+
+    <span class="filename">decompiled tree</span>
+<pre><code>decompiled\
+├── VisualColorFilter\          <span class="tok-c">// the WPF application layer</span>
+│   ├── App.cs                  <span class="tok-c">// startup, license gate</span>
+│   ├── ActivationWindow.cs     <span class="tok-c">// license key entry UI</span>
+│   ├── MainWindow.cs
+│   ├── ProfileNameWindow.cs
+│   └── SplashWindow.cs
+├── A\                          <span class="tok-c">// the obfuscated core</span>
+│   ├── A.cs, B.cs, ... O.cs
+│   └── M.cs                    <span class="tok-c">// 1,427 lines: the license engine</span>
+├── -PrivateImplementationDetails--22FC3C70-C44A-4F63-B620-9B352B42C44B-\
+│   └── AB1D7EF9-DE7C-42B7-A8C1-82331034674A.cs   <span class="tok-c">// the string decryptor</span>
+└── AB1D7EF9-DE7C-42B7-A8C1-82331034674A.cs</code></pre>
+
+    <p>At a glance: the app layer (<code>VisualColorFilter</code>) is readable &mdash; it&rsquo;s a WPF color-filter overlay with an activation window. The interesting part is the <code>A</code> namespace: a set of classes named <code>A</code>, <code>B</code>, <code>C</code> &hellip; through <code>O</code>, with nested types named <code>a</code>, <code>b</code>, <code>c</code> &hellip; and every method renamed to <code>A()</code>, <code>a()</code>, <code>B()</code>, <code>b()</code> &hellip; The license engine alone (<code>A\M.cs</code>) is 1,427 lines of this.</p>
+
+    
+    <h2 id="p2-anatomy"><span class="n">03</span>Anatomy of the string decryptor</h2>
+    <p>The heart of the obfuscation is a static class whose real runtime name is:</p>
+    <div class="term">
+      <div class="bar"><i></i><i></i><i></i></div>
+      <div class="body">&lt;PrivateImplementationDetails&gt;{22FC3C70-C44A-4F63-B620-9B352B42C44B}.<span class="hl">AB1D7EF9-DE7C-42B7-A8C1-82331034674A</span></div>
+    </div>
+    <p>ILSpy renders it as <code>AB1D7EF9_002DDE7C_002D42B7_002DA8C1_002D82331034674A</code> (it escapes the <code>&lt;</code>, <code>&gt;</code>, <code>{</code>, <code>}</code>, <code>-</code> characters), but in the actual metadata those are literal characters. That detail will matter later.</p>
+    <p>The class holds a single giant blob of encrypted data:</p>
+<pre><code>internal <span class="tok-k">static</span> byte[] _4 = <span class="tok-k">new</span> byte[<span class="tok-n">11351</span>] { <span class="tok-n">216</span>, <span class="tok-n">222</span>, <span class="tok-n">205</span>, <span class="tok-n">199</span>, <span class="tok-n">126</span>, <span class="tok-n">63</span>, ... };</code></pre>
+    <p>&hellip;and exposes hundreds of parameterless static methods &mdash; <code>A()</code>, <code>a()</code>, <code>B()</code>, <code>b()</code>, <code>BA()</code>, <code>BB()</code>, <code>cI()</code>, <code>Dq()</code>, and so on &mdash; each of which decrypts one string from that blob and returns it. Calls in the decompiled code look like this:</p>
+<pre><code><span class="tok-k">return</span> b(AB1D7EF9_002DDE7C_002D42B7_002DA8C1_002D82331034674A.<span class="tok-fn">Dl</span>(),
+         B(AB1D7EF9_002DDE7C_002D42B7_002DA8C1_002D82331034674A.<span class="tok-fn">DM</span>(),
+           AB1D7EF9_002DDE7C_002D42B7_002DA8C1_002D82331034674A.<span class="tok-fn">Dm</span>()));</code></pre>
+    <p>Every URL, every error code, every status string &mdash; gone from static analysis, replaced by a call to a decryptor method.</p>
+
+    
+    <h2 id="p2-plan"><span class="n">04</span>The plan: execute the metadata</h2>
+    <p>Reverse-engineering this decryptor statically would mean extracting the algorithm, the key schedule, the offsets &mdash; work, but doable. But there&rsquo;s a much dumber, much more reliable option available to us:</p>
+    <blockquote><p><strong>The methods already exist. The .NET runtime can call them.</strong></p></blockquote>
+    <p>If we load the DLL into a process with the same runtime version and invoke every one of those parameterless static string-returning methods via reflection, the decryptor does the hard work for us. We don&rsquo;t need to understand the cipher &mdash; we just need to ask the assembly for its own plaintext. Same trick as before, one level up: <em>ask for a copy of the plaintext.</em></p>
+    <p>The one requirement: the DLL is a WPF application targeting <code>net8.0-windows</code>, so our runner must target the same framework with WPF enabled &mdash; otherwise the assembly won&rsquo;t load (missing <code>PresentationFramework</code>). A plain console app aimed at <code>net8.0</code> would refuse to load it.</p>
+
+    <p>The project file is minimal:</p>
+    <span class="filename">strdump.csproj</span>
+<pre><code><span class="tok-c">&lt;!-- must be net8.0-windows + WPF to host the WPF assembly --&gt;</span>
+&lt;Project Sdk=<span class="tok-s">"Microsoft.NET.Sdk"</span>&gt;
+  &lt;PropertyGroup&gt;
+    &lt;OutputType&gt;Exe&lt;/OutputType&gt;
+    &lt;TargetFramework&gt;net8.0-windows&lt;/TargetFramework&gt;
+    &lt;UseWPF&gt;true&lt;/UseWPF&gt;
+    &lt;Nullable&gt;disable&lt;/Nullable&gt;
+  &lt;/PropertyGroup&gt;
+&lt;/Project&gt;</code></pre>
+
+    <p>The runner itself does three jobs: list the types, dump all decryptor methods, and print each decrypted string:</p>
+    <span class="filename">strdump/Program.cs</span>
+<pre><code><span class="tok-c">// load the obfuscated DLL and decrypt all its strings</span>
+<span class="tok-k">using</span> System;
+<span class="tok-k">using</span> System.IO;
+<span class="tok-k">using</span> System.Linq;
+<span class="tok-k">using</span> System.Reflection;
+
+<span class="tok-k">class</span> <span class="tok-fn">Program</span>
+{
+    <span class="tok-k">static int</span> <span class="tok-fn">Main</span>(<span class="tok-k">string</span>[] args)
+    {
+        <span class="tok-k">if</span> (args.Length &lt; <span class="tok-n">2</span>)
+        {
+            Console.Error.WriteLine(<span class="tok-s">"usage: strdump &lt;dll&gt; &lt;mode&gt; [typeName]"</span>);
+            <span class="tok-k">return</span> <span class="tok-n">1</span>;
+        }
+        <span class="tok-k">string</span> dllPath = Path.GetFullPath(args[<span class="tok-n">0</span>]);
+        <span class="tok-k">string</span> mode = args[<span class="tok-n">1</span>];
+
+        Assembly asm;
+        <span class="tok-k">try</span> { asm = Assembly.LoadFrom(dllPath); }
+        <span class="tok-k">catch</span> (Exception ex)
+        { Console.Error.WriteLine(<span class="tok-s">"LoadFrom failed: "</span> + ex); <span class="tok-k">return</span> <span class="tok-n">2</span>; }
+
+        <span class="tok-c">// mode "types" -&gt; enumerate every type in the assembly</span>
+        <span class="tok-k">if</span> (mode == <span class="tok-s">"types"</span>)
+        {
+            <span class="tok-k">foreach</span> (var tt <span class="tok-k">in</span> asm.GetTypes().OrderBy(t =&gt; t.FullName))
+                Console.WriteLine(tt.FullName);
+            <span class="tok-k">return</span> <span class="tok-n">0</span>;
+        }
+
+        <span class="tok-c">// mode "dump" -&gt; invoke every static string method on the decryptor</span>
+        <span class="tok-k">string</span> typeName = args[<span class="tok-n">2</span>];
+        Type t = asm.GetType(typeName);
+        <span class="tok-k">if</span> (t == <span class="tok-k">null</span>)
+        { Console.Error.WriteLine(<span class="tok-s">"type not found: "</span> + typeName); <span class="tok-k">return</span> <span class="tok-n">3</span>; }
+
+        var methods = t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(m =&gt; m.ReturnType == <span class="tok-k">typeof</span>(<span class="tok-k">string</span>) &amp;&amp; m.GetParameters().Length == <span class="tok-n">0</span>)
+            .OrderBy(m =&gt; m.Name, StringComparer.Ordinal);
+
+        <span class="tok-k">int</span> count = <span class="tok-n">0</span>;
+        <span class="tok-k">foreach</span> (var m <span class="tok-k">in</span> methods)
+        {
+            <span class="tok-k">string</span> val;
+            <span class="tok-k">try</span> { val = (<span class="tok-k">string</span>)m.Invoke(<span class="tok-k">null</span>, <span class="tok-k">null</span>); }
+            <span class="tok-k">catch</span> (Exception ex)
+            { val = <span class="tok-s">"!!ERROR: "</span> + (ex.InnerException?.Message ?? ex.Message); }
+            Console.WriteLine(m.Name + <span class="tok-s">"\t"</span> + val);
+            count++;
+        }
+        Console.Error.WriteLine(<span class="tok-s">"TOTAL_METHODS="</span> + count);
+        <span class="tok-k">return</span> <span class="tok-n">0</span>;
+    }
+}</code></pre>
+
+    <p>Two details are worth calling out:</p>
+    <ol>
+      <li><code>BindingFlags.Public | NonPublic | Static</code> &mdash; the decryptor methods are <code>internal</code>, so a default reflection search wouldn&rsquo;t find them.</li>
+      <li><code>m.Invoke(null, null)</code> &mdash; the methods are parameterless statics, so no target instance and no arguments. Just <em>call them</em>.</li>
+    </ol>
+
+    
+    <h2 id="p2-gotcha"><span class="n">05</span>The type-name gotcha</h2>
+    <p>The first attempt to dump failed with <code>type not found</code>. The reason is exactly the naming detail mentioned earlier. ILSpy renders the runtime name with escaped underscores:</p>
+<pre><code>_003CPrivateImplementationDetails_003E_007B22FC3C70_002D...</code></pre>
+    <p>&hellip;but that&rsquo;s just ILSpy&rsquo;s ASCII-safe rendering of the name. In the actual metadata, the characters are literal:</p>
+<pre><code>&lt;PrivateImplementationDetails&gt;{22FC3C70-C44A-4F63-B620-9B352B42C44B}.<span class="tok-s">AB1D7EF9-DE7C-42B7-A8C1-82331034674A</span></code></pre>
+    <p>So <code>asm.GetType()</code> needs the <em>real</em> name with the raw <code>&lt;</code>, <code>&gt;</code>, <code>{</code>, <code>}</code>, <code>.</code> characters. A quick <code>asm.GetTypes()</code> dump confirmed it. Easy fix, easy lesson: <strong>the decompiler&rsquo;s rendering of a type name is not the type name.</strong></p>
+
+    
+    <h2 id="p2-dump"><span class="n">06</span>The dump</h2>
+    <div class="term">
+      <div class="bar"><i></i><i></i><i></i></div>
+      <div class="body">$ strdump.exe NoMercyAI.Visual.dll dump <span class="hl">"&lt;PrivateImplementationDetails&gt;{22FC3C70-C44A-4F63-B620-9B352B42C44B}.AB1D7EF9-DE7C-42B7-A8C1-82331034674A"</span> &gt; strings.tsv
+<span class="ok">TOTAL_METHODS=453</span></div>
+    </div>
+    <p>The runner enumerated <strong>453 parameterless string methods</strong> and invoked every single one. The output landed in a TSV: <code>methodName&lt;TAB&gt;decryptedString</code>.</p>
+    <p>Every string in the application, decrypted by the application&rsquo;s own code, in one pass. Zero static analysis of the cipher.</p>
+
+    
+    <h2 id="p2-findings"><span class="n">07</span>What the strings told us</h2>
+    <p>With 453 plaintext strings on disk, the obfuscation simply stopped being an obstacle. A handful of categories jumped out immediately.</p>
+
+    <p><strong>The infrastructure:</strong></p>
+    <table>
+      <thead><tr><th>String</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>https://nomercyai.tech/</td><td>base URL</td></tr>
+        <tr><td>api/licenses/activate</td><td>license activation endpoint</td></tr>
+        <tr><td>api/licenses/validate</td><td>periodic validation endpoint</td></tr>
+        <tr><td>api/licenses/client-report</td><td>crash / error reporting</td></tr>
+        <tr><td>api/licenses/revocation-status</td><td>revocation polling</td></tr>
+        <tr><td>api/client-updates/visual/latest</td><td>update check</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>The crypto and protocol markers</strong> (constant strings used to tag signed payloads):</p>
+    <div class="chips">
+      <span class="chip">ec-p256-v1</span>
+      <span class="chip">nmv-license-v1</span>
+      <span class="chip">nmv-license-v2</span>
+      <span class="chip">nmv-revocation-v1</span>
+      <span class="chip">nmv-update-v1</span>
+      <span class="chip">nmv-device-proof-v1</span>
+    </div>
+    <p>Plus the ECDSA P-256 public key used to verify server signatures &mdash; recovered from <code>A\N.cs</code>:</p>
+<pre><code>MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETa6dZO3clRgBl96BdtrDBpaTjNBJmYRVqkDOmq6U8q3xTgDjd3xk5YDu2PDrkaNITYBzVj0d3byiaQbuXEleHQ==</code></pre>
+
+    <p><strong>The license state codes</strong> &mdash; the application&rsquo;s entire error vocabulary, in plaintext:</p>
+    <div class="chips">
+      <span class="chip">invalid_license</span>
+      <span class="chip">license_expired</span>
+      <span class="chip">license_revoked</span>
+      <span class="chip">device_limit</span>
+      <span class="chip">device_key_changed</span>
+      <span class="chip">inactive_license</span>
+      <span class="chip">signature_invalid</span>
+      <span class="chip">invalid_session</span>
+      <span class="chip">client_update_required</span>
+      <span class="chip">device_proof_invalid</span>
+      <span class="chip">not_activated</span>
+    </div>
+
+    <p>And the validation-phase codes that tell us exactly how the client behaves when the server is unreachable:</p>
+    <div class="chips">
+      <span class="chip">validate_network</span>
+      <span class="chip">validate_network_grace</span>
+      <span class="chip">validate_network_no_grace</span>
+      <span class="chip">validate_timeout</span>
+      <span class="chip">validate_timeout_grace</span>
+      <span class="chip">validate_offline_grace</span>
+      <span class="chip">validate_server_grace</span>
+      <span class="chip">validate_grace_revoked</span>
+      <span class="chip">validate_client</span>
+    </div>
+
+    <p><strong>Localization</strong> &mdash; the app is multilingual (the dump contained <code>ru</code>, <code>zh</code> and other language tables). Even the Russian UI strings came out clean.</p>
+
+    <p>At this point the entire server-side architecture was recoverable from strings alone: the endpoints, the signature scheme, the offline-grace behavior, the device-proof protocol, the update mechanism. All the answers to &ldquo;how does this work?&rdquo; were sitting in a plaintext TSV, produced by the program itself.</p>
+
+    
+    <h2 id="p2-next"><span class="n">08</span>What&rsquo;s Next?</h2>
+    <p>We have a fully decompiled, fully readable managed core, and a plaintext dump of every string it owns. We know the server, the endpoints, the crypto, and the state machine. In <strong>Part 3</strong>, we put it all together: the license system &mdash; the startup gate, the one-minute re-validation loop, the 15-hour offline grace window, the anti-tamper lease, and the decision points where the whole thing is won or lost.</p>
+    <p>Having 453 strings is just the beginning.</p>
+      <h2 class="partdiv" id="p3"><span class="partdiv__n">Part 3</span><span class="partdiv__t">The License System</span></h2>
+<h2 id="p3-intro"><span class="n">01</span>Introduction</h2>
+    <p>By now we have everything on disk: the extracted DLL, a full decompilation, and <a href="#p2">453 plaintext strings</a>. We know the server (<code>nomercyai.tech</code>), the endpoints, the protocol markers, and the public key. All the ingredients are in hand &mdash; so what does the gate actually <em>look</em> like?</p>
+    <p>This is the interesting part. Because the license system is not a single <code>if</code> statement you flip. It&rsquo;s a small state machine that:</p>
+    <ol>
+      <li><strong>Binds every session to the device and the binary</strong> &mdash; a response is only valid if it matches the nonce, the device ID, the device key, the client build and a binary hash.</li>
+      <li><strong>Verifies server responses cryptographically</strong> &mdash; ECDSA P-256, private key on the server, public key in the client.</li>
+      <li><strong>Keeps re-validating forever</strong> &mdash; a one-minute timer re-checks with the server for the entire lifetime of the process.</li>
+      <li><strong>Survives brief outages</strong> &mdash; a 15-hour offline grace window, tied to the last successful validation.</li>
+      <li><strong>Hates debuggers and patch jobs</strong> &mdash; anti-debug checks and a 4-minute &ldquo;lease&rdquo; that must be re-armed by each successful validation.</li>
+    </ol>
+    <p>None of this is unbeatable in an absolute sense. But it&rsquo;s worth understanding exactly where every decision is made &mdash; because that&rsquo;s where the design lives and dies.</p>
+
+    
+    <h2 id="p3-trust"><span class="n">02</span>The trust model</h2>
+    <p>The core idea is asymmetric. The <strong>server holds the signing private key</strong>; the <strong>client embeds only the public key</strong>:</p>
+    <div class="term">
+      <div class="bar"><i></i><i></i><i></i></div>
+      <div class="body">MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE<span class="hl">T a6dZO3clRgBl96BdtrDBpaTjNBJmYRVqkDOmq6U8q3xTgDjd3xk5YDu2PDrkaNITYBzVj0d3byiaQbuXEleHQ==</span></div>
+    </div>
+    <p>That&rsquo;s a SubjectPublicKeyInfo blob for an <strong>EC P-256</strong> key (<code>ec-p256-v1</code>). Any response from the server &mdash; a signed license payload, a revocation status, an update manifest &mdash; carries a signature the client verifies against this key:</p>
+    <span class="filename">A/N.cs — signature verification</span>
+<pre><code><span class="tok-k">using</span> ECDsa eCDsa = ECDsa.Create();
+eCDsa.ImportSubjectPublicKeyInfo(array, <span class="tok-k">out</span> _);
+<span class="tok-k">return</span> eCDsa.VerifyData(
+    Encoding.UTF8.GetBytes(P_0),
+    signature,
+    HashAlgorithmName.SHA256,
+    DSASignatureFormat.Rfc3279DerSequence);</code></pre>
+    <blockquote><p><strong>Consequence:</strong> a valid license can only be produced by someone who holds the server&rsquo;s private key. The client can&rsquo;t mint its own &mdash; it can only <em>judge</em> what the server sends. Any bypass, therefore, lives entirely in how the client <em>judges</em>, and in what happens <em>between</em> validations.</p></blockquote>
+
+    
+    <h2 id="p3-state"><span class="n">03</span>The state</h2>
+    <p>Three objects carry the whole system:</p>
+    <table>
+      <thead><tr><th>Object</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td>k</td><td>the <strong>license</strong>: status, issuedTo, expiresAt, daysRemaining, maxDevices, isLifetime, plus a lastValidated timestamp. Valid = <code>status == "active" && expiresAt &gt; lastValidated</code></td></tr>
+        <tr><td>c</td><td>the <strong>activation cache</strong>: token, deviceId, license fields, lastValidatedAtUtc, offlineValidUntilUtc, device key ID, protocol version</td></tr>
+        <tr><td>l</td><td>the <strong>result</strong>: valid (bool), status code (e.g. <code>license_expired</code>), user-facing message, and the license</td></tr>
+      </tbody>
+    </table>
+    <p>The cache is written to disk as <code>activation.dat</code>, <strong>DPAPI-protected</strong> (<code>ProtectedData.Protect</code> under the current user) so it can&rsquo;t be forged by writing a JSON file by hand:</p>
+    <span class="filename">A/M.cs — persist the activation cache</span>
+<pre><code>Directory.CreateDirectory(M.m_a);
+byte[] array = ProtectedData.Protect(
+    JsonSerializer.SerializeToUtf8Bytes(P_0, M.m_A),
+    M.m_A,
+    DataProtectionScope.CurrentUser);
+<span class="tok-c">// write atomically: tmp file + File.Move(overwrite: true)</span></code></pre>
+    <p>The device identity lives separately in <code>device-id.dat</code>, also DPAPI-protected &mdash; a 64-hex-char random string generated on first run.</p>
+
+    
+    <h2 id="p3-startup"><span class="n">04</span>The startup gate</h2>
+    <p>The entry point is <code>App</code>&rsquo;s startup handler in <code>VisualColorFilter\App.cs</code>. The flow is short:</p>
+    <ol>
+      <li>Install exception handlers.</li>
+      <li>Take a single-instance <code>Mutex</code>.</li>
+      <li>Kick off <code>M.A()</code> (validate with the cached token) &mdash; and if a splash is enabled, show it while waiting.</li>
+      <li>Evaluate the result:</li>
+    </ol>
+    <span class="filename">VisualColorFilter/App.cs — the gate</span>
+<pre><code><span class="tok-k">private</span> <span class="tok-k">static</span> <span class="tok-k">bool</span> <span class="tok-fn">A</span>(l P_0)
+{
+    <span class="tok-k">if</span> (P_0.A() &amp;&amp; P_0.A != <span class="tok-k">null</span>)   <span class="tok-c">// valid && license != null</span>
+    {
+        <span class="tok-k">return</span> <span class="tok-k">true</span>;
+    }
+    ActivationWindow activationWindow = <span class="tok-k">new</span> ActivationWindow(P_0.B());
+    <span class="tok-k">if</span> (activationWindow.ShowDialog() == <span class="tok-k">true</span>)
+    {
+        <span class="tok-k">return</span> activationWindow.A != <span class="tok-k">null</span>;   <span class="tok-c">// a license came back from the dialog</span>
+    }
+    <span class="tok-k">return</span> <span class="tok-k">false</span>;
+}</code></pre>
+    <p>If the gate returns <code>false</code>, the app <code>Shutdown()</code>s. If <code>true</code>, a <code>MainWindow</code> is created and the tray <code>NotifyIcon</code> is initialized. <strong>The first decision point</strong> is literally this three-line method: valid result + non-null license.</p>
+
+    
+    <h2 id="p3-activation"><span class="n">05</span>Activation</h2>
+    <p>When there&rsquo;s no valid cache (or the dialog is shown), the user types a key into <code>ActivationWindow</code>. The button handler calls the other <code>M.A(key)</code> &mdash; the <em>activation</em> overload. It POSTs to <code>api/licenses/activate</code>:</p>
+<pre class="json">{
+  <span class="jkey">"key"</span>: <span class="jstr">"..."</span>,
+  <span class="jkey">"deviceId"</span>: <span class="jstr">"..."</span>,
+  <span class="jkey">"deviceName"</span>: <span class="jstr">"..."</span>,
+  <span class="jkey">"appVersion"</span>: <span class="jstr">"1.1.6"</span>,
+  <span class="jkey">"nonce"</span>: <span class="jstr">"..."</span>,
+  <span class="jkey">"protocolVersion"</span>: <span class="jnum">2</span>,
+  <span class="jkey">"clientBuildId"</span>: <span class="jstr">"..."</span>,
+  <span class="jkey">"binaryHash"</span>: <span class="jstr">"..."</span>,
+  <span class="jkey">"devicePublicKey"</span>: <span class="jstr">"..."</span>,
+  <span class="jkey">"deviceKeyId"</span>: <span class="jstr">"..."</span>,
+  <span class="jkey">"requestTime"</span>: <span class="jstr">"..."</span>,
+  <span class="jkey">"deviceProof"</span>: <span class="jstr">"..."</span>
+}</code></pre>
+    <p>Note the last five fields: this isn&rsquo;t just <code>key + deviceId</code>. The client generates a <strong>device key pair</strong>, proves possession of it (<code>deviceProof</code>), and sends the public half &mdash; so the server can bind the license to a <em>cryptographic device identity</em>, not just a random string that could be copied to another machine.</p>
+    <p>The response is verified in <code>M.A(response, nonce, deviceId, deviceKeyId, ...)</code> &mdash; the signed-payload validator:</p>
+    <ol>
+      <li><code>protocol == "ec-p256-v1"</code> and the ECDSA signature verifies over the signed data.</li>
+      <li>The signed data (newline-delimited <code>key=value</code> lines, tagged <code>nmv-license-v1</code> or <code>nmv-license-v2</code>) must contain: <code>protocolVersion == 2</code>, <code>nonce</code> == the one we just sent (anti-replay), <code>device</code> == our deviceId, <code>deviceKey</code> == our device key ID, values matching our <code>clientBuildId</code> and <code>binaryHash</code>, <code>status == "active"</code>, <code>expiresAt</code> / <code>maxDevices</code> / <code>isLifetime</code> matching the license JSON, <code>issuedTo</code> matching, and <code>serverTime</code> within <strong>10 minutes</strong> of our clock.</li>
+      <li>The license JSON must be internally consistent with the signed fields.</li>
+    </ol>
+    <p>Only then is the cache written, the lease armed, and a valid <code>l</code> returned.</p>
+    <blockquote><p><strong>Consequence:</strong> a captured <code>activation.dat</code> from another machine dies on the <code>device</code>/<code>deviceKey</code>/<code>binaryHash</code> bindings &mdash; even before the server gets a say.</p></blockquote>
+
+    
+    <h2 id="p3-loop"><span class="n">06</span>The one-minute loop</h2>
+    <p>The part most people forget about. Once in <code>MainWindow</code>, <code>App</code> starts a <code>DispatcherTimer</code>:</p>
+    <span class="filename">VisualColorFilter/App.cs — re-validation loop</span>
+<pre><code>this.m_A = <span class="tok-k">new</span> DispatcherTimer { Interval = TimeSpan.FromMinutes(<span class="tok-n">1.0</span>) };
+this.m_A.Tick += A;
+this.m_A.Start();</code></pre>
+    <p>Every tick calls <code>M.A()</code> again &mdash; the <em>validate</em> overload &mdash; which re-POSTs the cached token to <code>api/licenses/validate</code>, re-verifies the signed response, and updates the cache. The tick handler then applies the <strong>three-strike rule</strong>:</p>
+    <ul>
+      <li><strong>Transient failures</strong> (network, timeout, unknown) &mdash; status codes like <code>validate_network</code> / <code>validate_timeout</code> &mdash; are retried, up to 3 consecutive ticks.</li>
+      <li><strong>Hard failures</strong> (invalid, expired, revoked) &mdash; are terminal immediately: the window is hidden, the app re-opens <code>ActivationWindow</code>, and if the user can&rsquo;t produce a valid license, the app exits.</li>
+    </ul>
+    <p>So even a flawless startup check is not enough: the license must survive re-validation <strong>every minute</strong>, forever. Kill the server check and you have ~60 seconds before the timer comes knocking.</p>
+
+    
+    <h2 id="p3-offline"><span class="n">07</span>The offline grace window</h2>
+    <p>Network failures are the one case where the app is forgiving &mdash; by design. When the server is unreachable (timeout, <code>429</code>, <code>5xx</code>), <code>M.A()</code> falls back to <code>a(c2)</code>, the offline path over the cached activation:</p>
+    <span class="filename">A/M.cs — offline grace path</span>
+<pre><code>DateTime utcNow   = DateTime.UtcNow;
+DateTime dateTime  = P_0.C.ToUniversalTime();                    <span class="tok-c">// lastValidated</span>
+DateTime dateTime2 = P_0.D == <span class="tok-k">default</span>
+    ? dateTime.AddHours(<span class="tok-n">15.0</span>)                                    <span class="tok-c">// offlineValidUntil</span>
+    : P_0.D.ToUniversalTime();
+
+<span class="tok-k">if</span> (dateTime == <span class="tok-k">default</span> || utcNow &lt; dateTime - M.m_A || utcNow &gt; dateTime2)
+    <span class="tok-k">return null</span>;                                                 <span class="tok-c">// outside the window</span>
+
+<span class="tok-k">if</span> (P_0.B.ToUniversalTime() &lt;= utcNow) <span class="tok-k">return null</span>;              <span class="tok-c">// already expired</span>
+<span class="tok-k">if</span> (P_0.c == <span class="tok-k">default</span>) <span class="tok-k">return null</span>;                               <span class="tok-c">// never validated</span>
+
+<span class="tok-k">bool</span> flag = P_0.B.ToUniversalTime().Year &gt;= <span class="tok-n">9000</span>;                <span class="tok-c">// lifetime key</span></code></pre>
+    <p>The window is <strong>[lastValidated &minus; tolerance, lastValidated + 15h]</strong>:</p>
+    <ul>
+      <li><code>lastValidated</code> is the server-provided time from the last successful validation (not local time).</li>
+      <li><code>offlineValidUntilUtc = lastValidated + 15h</code>.</li>
+      <li><code>expiresAt</code> must still be in the future.</li>
+      <li>A license with <code>expiresAt</code> in the year <strong>9000</strong> is treated as <strong>lifetime</strong> (<code>isLifetime</code>).</li>
+    </ul>
+    <p>If the offline check passes, the app builds an <code>active</code> license from the cache, arms the lease, and keeps running. That&rsquo;s the product&rsquo;s offline-usability feature &mdash; and, as always with grace windows, it&rsquo;s also the one place where time itself is the only other participant in the decision.</p>
+
+    
+    <h2 id="p3-antitamper"><span class="n">08</span>Anti-debug and the lease</h2>
+    <p>Two guards make runtime patching awkward:</p>
+    <p><strong>Anti-debug (<code>O.A()</code>)</strong> &mdash; called at the start of both activation and validation, before any network I/O:</p>
+    <span class="filename">A/O.cs</span>
+<pre><code><span class="tok-k">internal static void</span> <span class="tok-fn">A</span>()
+{
+    <span class="tok-k">if</span> (Debugger.IsAttached || a())     <span class="tok-c">// a() -&gt; IsDebuggerPresent / CheckRemoteDebuggerPresent</span>
+    {
+        L.a();
+        <span class="tok-k">throw new</span> SecurityException(...);
+    }
+}</code></pre>
+    <p>Attach a debugger and the next validation throws <code>SecurityException</code>. This is why our workflow was: static analysis + <em>executing metadata</em> in a separate process, never debugging the live app.</p>
+    <p><strong>The lease (<code>L</code>)</strong> &mdash; a timer-based guard armed only by success:</p>
+    <span class="filename">A/L.cs</span>
+<pre><code><span class="tok-k">private const long</span> m_A = <span class="tok-n">240000L</span>;   <span class="tok-c">// 4 minutes</span>
+
+<span class="tok-k">internal static void</span> <span class="tok-fn">B</span>()
+{
+    O.A();
+    <span class="tok-k">long</span> elapsed = Environment.TickCount64 - Interlocked.Read(<span class="tok-k">ref</span> m_a);
+    <span class="tok-k">if</span> (Volatile.Read(<span class="tok-k">ref</span> m_A) != <span class="tok-n">1</span> || elapsed &lt; <span class="tok-n">0</span> || elapsed &gt; <span class="tok-n">240000</span>)
+        <span class="tok-k">throw new</span> SecurityException(...);   <span class="tok-c">// "signed license lease missing or expired"</span>
+}</code></pre>
+    <p><code>L.A()</code> (arm) is called <em>inside</em> the successful paths of activation, validation, and offline grace. Any runtime path that needs a fresh lease must find one armed within the last 4 minutes. <strong>This is the subtle one:</strong> bypassing the validation check in a way that skips <code>L.A()</code> leaves the lease to expire, and the next runtime check throws. A &ldquo;return true&rdquo; patch that ignores the lease doesn&rsquo;t survive a single minute &mdash; the very timer meant to keep the license honest is also what keeps the lease fresh.</p>
+    <p><strong>Binary binding</strong> &mdash; the requests and signed responses are bound to a <code>clientBuildId</code> and <code>binaryHash</code> derived from the client itself. A modified binary presents a different fingerprint, which the server can (and does) verify server-side. Whatever you change locally, the <em>server</em> still decides whether to sign a response for that fingerprint.</p>
+
+    
+    <h2 id="p3-map"><span class="n">09</span>The decision points, mapped</h2>
+    <p>Every gate we found, in one table:</p>
+    <table>
+      <thead><tr><th>#</th><th>Where</th><th>What decides</th><th>On failure</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>App.A(l) at startup</td><td>result valid && license != null</td><td>ActivationWindow, else exit</td></tr>
+        <tr><td>2</td><td>M.A(key) activation</td><td>ECDSA signature + protocol + all bindings + serverTime ±10 min</td><td>reject, show message</td></tr>
+        <tr><td>3</td><td>M.A() validate (1-min timer)</td><td>re-verify server response, update cache</td><td>3 transient strikes or 1 hard failure &rarr; re-activate</td></tr>
+        <tr><td>4</td><td>a(c2) offline</td><td>within [lastValidated &minus; tol, +15h], not expired, previously validated</td><td>SecurityException / re-activate</td></tr>
+        <tr><td>5</td><td>L.B() lease</td><td>armed by a success within the last 240s</td><td>SecurityException</td></tr>
+        <tr><td>6</td><td>O.A() anti-debug</td><td>Debugger.IsAttached / IsDebuggerPresent</td><td>SecurityException</td></tr>
+        <tr><td>7</td><td>server-side</td><td>signs only what it considers valid: key, device, binary, quota</td><td>no valid signature = no valid license</td></tr>
+      </tbody>
+    </table>
+    <p>The key insight for anyone reading this as a design reference: <strong>the decisions are layered and self-reinforcing.</strong> Startup, timer, offline window, lease and anti-debug each require the others to have happened. Defeating one leaves the other four standing, and the server&rsquo;s signature sits at the root &mdash; every local path ultimately depends on <em>having received</em> a signed, device-bound, current license.</p>
+
+    
+    <h2 id="p3-closing"><span class="n">10</span>What&rsquo;s Next?</h2>
+    <p>This closes the three-part series. We went from a truncated 77&nbsp;MB binary, to a clean extracted DLL, to 453 decrypted strings, to a full map of a server-signed, device-bound, clock-aware license system &mdash; every endpoint, every state, every decision point.</p>
+    <p>The technical story that&rsquo;s often told about &ldquo;impenetrable&rdquo; protection is really just this: a sequence of boring, correct decisions stacked on top of each other. And the practical lesson of the whole exercise is the one we kept coming back to &mdash; <strong>the best way through a wall is usually to ask the target for its own plaintext, one layer at a time.</strong></p>
+    <blockquote><p><em>&mdash; End of series.</em></p></blockquote>
+      <h2 class="partdiv" id="p4"><span class="partdiv__n">Part 4</span><span class="partdiv__t">Hardening the System</span></h2>
+<h2 id="p4-intro"><span class="n">01</span>Introduction — a map is a two-way street</h2>
+    <p>Everything in Parts 1&ndash;3 was an attacker&rsquo;s map. But a map doesn&rsquo;t take sides: every weakness we found is also an unpatched hole the <strong>owner</strong> can close. Nothing here is exotic &mdash; it&rsquo;s the same boring, layered design we spent three parts dissecting, done properly.</p>
+    <p>The honest framing first: <strong>a client that ships its own decryption keys can never be truly secure.</strong> The goal is never &ldquo;impenetrable&rdquo; &mdash; it&rsquo;s <em>cost</em>. Each fix raises the time, tooling and skill needed to get past it, until the effort stops being worth the reward. That&rsquo;s the standard we design to.</p>
+
+    
+    <h2 id="p4-weak"><span class="n">02</span>The weaknesses, grouped</h2>
+    <p>Everything we found collapses into five structural problems:</p>
+    <table>
+      <thead><tr><th>#</th><th>Weakness</th><th>Where it bites</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><strong>Payload is recoverable</strong></td><td>Truncated bundle, headerless table, raw DEFLATE, no encryption (Part 1)</td></tr>
+        <tr><td>2</td><td><strong>&ldquo;Obfuscation&rdquo; is a static cipher</strong></td><td>Key material embedded in the assembly; reflection dumps everything (Part 2)</td></tr>
+        <tr><td>3</td><td><strong>Decisions run client-side</strong></td><td>The client owns the validation, the grace window, the lease and the timer (Part 3)</td></tr>
+        <tr><td>4</td><td><strong>Device binding is a DPAPI file</strong></td><td><code>activation.dat</code> / <code>device-id.dat</code> are machine-user DPAPI &mdash; migratable by the same user</td></tr>
+        <tr><td>5</td><td><strong>Anti-debug is cosmetic</strong></td><td><code>Debugger.IsAttached</code> / <code>IsDebuggerPresent</code> are bypassed in minutes</td></tr>
+      </tbody>
+    </table>
+    <p>The fixes below each map to one of these five.</p>
+
+    
+    <h2 id="p4-fix1"><span class="n">03</span>Fix 1 — Encrypt the payload (kills weakness 1)</h2>
+    <p>Part 1 was possible because the bundle stored everything in raw DEFLATE with no footer validation. The fix is to make the managed payload <em>not exist</em> until runtime:</p>
+    <ol>
+      <li><strong>Use .NET 7+ single-file encryption</strong> (<code>IncludeAllContentForSelfExtract</code> + published single-file with encryption) so the IL is encrypted on disk and decrypted only in the native host at load.</li>
+      <li><strong>Move the key out of the file.</strong> Do not embed a static key next to the blob. Derive it from the native host, the signing certificate chain, or a server handshake &mdash; anything that isn&rsquo;t a constant in the same binary.</li>
+      <li><strong>Anti-dump in the native host</strong>: wipe the decrypted mapping after load where feasible, hook <code>NtQueryVirtualMemory</code>/minidump paths, and register a minidump callback that scrubs managed heaps before dump.</li>
+      <li><strong>Validate the headerless table.</strong> Part 1 worked because there was no footer check &mdash; add the <code>0x8b12</code> footer and verify every entry hash at load.</li>
+    </ol>
+    <p><strong>Effort:</strong> medium &middot; <strong>Impact:</strong> very high &mdash; it re-does Part 1 from scratch.</p>
+
+    
+    <h2 id="p4-fix2"><span class="n">04</span>Fix 2 — Real constant protection (kills weakness 2)</h2>
+    <p>Part 2 took one afternoon because the &ldquo;obfuscator&rdquo; was a static dictionary: one 11,351-byte blob, one decryptor class, every string in the clear in memory. The fix is to stop shipping the key:</p>
+    <ol>
+      <li><strong>Context-keyed encryption.</strong> Derive each string&rsquo;s key from its <em>method</em> (method name + body hash), so a single dump no longer works &mdash; you&rsquo;d need per-method keys.</li>
+      <li><strong>No global blob.</strong> Split the key material across the assembly, generated per-build, so a prior build&rsquo;s keys are dead.</li>
+      <li><strong>Lazy decrypt-and-free.</strong> Decrypt only when first used, then wipe the buffer; keep strings out of the &ldquo;all strings in memory&rdquo; state that a <code>strings</code>-style sweep finds.</li>
+      <li><strong>Use a real obfuscator</strong> (ConfuserEx, Agile.NET, Eziriz) for control-flow + constants, and re-run it per release. Caveat: obfuscation raises cost; it is not a boundary.</li>
+    </ol>
+    <p><strong>Effort:</strong> low&ndash;medium &middot; <strong>Impact:</strong> high &mdash; kills the reflection dump we did in Part 2.</p>
+
+    
+    <h2 id="p4-fix3"><span class="n">05</span>Fix 3 — Move decisions server-side (kills weakness 3, the big one)</h2>
+    <p>The structural flaw in Part 3 is that <em>the client</em> decides. The server signs, but the client judges &mdash; and a judge you control can be persuaded. The fix is to stop trusting the client&rsquo;s judgment for the things that matter:</p>
+    <ol>
+      <li><strong>Short-lived session tickets, not long-lived licenses.</strong> Activate once, receive a signed ticket with a 5&ndash;15 minute TTL. Every feature call re-presents the ticket; the server re-signs or rejects. There is no &ldquo;cache&rdquo; to fix because there&rsquo;s nothing long-lived to cache.</li>
+      <li><strong>Streaming / challenge responses.</strong> Each validation round includes a server-issued random nonce the client must include in the <em>next</em> request; responses are bound to that nonce chain. A replayed or fabricated session dies in one round.</li>
+      <li><strong>Online enforcement for the crown jewels.</strong> The offline path is where client-side trust lives. Make core functionality (exports, filters) require a fresh server session; degrade gracefully (watermark, read-only) offline instead of full unlock.</li>
+      <li><strong>Server-side binary fingerprint.</strong> Store the client&rsquo;s <code>binaryHash</code> server-side and refuse to sign for unknown/modified hashes &mdash; the check can&rsquo;t be patched client-side because the <em>server</em> enforces it.</li>
+      <li><strong>Nonce monotonicity.</strong> Track a server-side counter per device; reject out-of-order validation (kills the &ldquo;roll back time/state&rdquo; class of attacks).</li>
+    </ol>
+    <p><strong>Effort:</strong> high &middot; <strong>Impact:</strong> the highest &mdash; this is the only fix that removes the client as the ultimate decision-maker.</p>
+
+    
+    <h2 id="p4-fix4"><span class="n">06</span>Fix 4 — Bind to hardware, not a DPAPI file (kills weakness 4)</h2>
+    <p><code>activation.dat</code> and <code>device-id.dat</code> are DPAPI <code>CurrentUser</code> blobs. That protects against casual text editors, but the same Windows user can migrate them to another machine and they decrypt fine. Fix:</p>
+    <ol>
+      <li><strong>TPM-backed keys.</strong> Store the device key in the TPM (<code>NCrypt</code>/TPM 2.0, non-exportable) and sign a proof with it on every activation. Copying files no longer copies the ability to sign.</li>
+      <li><strong>Windows Hello / hardware attestation</strong> where acceptable &mdash; the strongest client-side anchor Windows gives you without a driver.</li>
+      <li><strong>Dual factor on license binding</strong>: bind to (a) the TPM key ID <em>and</em> (b) a server-registered device record, so even a cloned disk fails the server-side device check.</li>
+      <li><strong>Kill the migration vector explicitly</strong>: server-side detect and reject a device record that suddenly reappears with a different hardware profile.</li>
+    </ol>
+    <p><strong>Effort:</strong> medium&ndash;high &middot; <strong>Impact:</strong> high &mdash; removes the &ldquo;copy activation.dat to another PC&rdquo; scenario for real.</p>
+
+    
+    <h2 id="p4-fix5"><span class="n">07</span>Fix 5 — Shrink and complicate the grace window</h2>
+    <p>Part 3 showed a 15-hour offline grace: <code>[lastValidated &minus; tolerance, lastValidated + 15h]</code>, plus a 3-strike transient rule. That&rsquo;s a big, forgiving surface. Fix:</p>
+    <ol>
+      <li><strong>Tighten the window</strong> (e.g., 4 hours) and make the tolerance asymmetric &mdash; an <em>old</em> <code>lastValidated</code> is suspicious, not forgivable.</li>
+      <li><strong>Signed offline extensions.</strong> When validating online, also issue a short, signed <em>offline-extension token</em> the client may use once offline. No online validation &rarr; no fresh token &rarr; offline mode dies when the old one expires. The grace now requires the server&rsquo;s signature instead of just the client&rsquo;s clock.</li>
+      <li><strong>Anchored clock, not client clock.</strong> Never trust <code>DateTime.UtcNow</code> from the host for decisions; always evaluate against the last server-provided time plus elapsed-time measurement. Lifetime keys (Year &ge; 9000) should be re-verified online periodically &mdash; a lifetime license should not also be an offline-forever license.</li>
+      <li><strong>Strike counting server-side.</strong> Have the client report transient failures; decide the &ldquo;3 strikes&rdquo; policy on the server, so the retry budget can&rsquo;t be stretched by patching a constant.</li>
+    </ol>
+    <p><strong>Effort:</strong> medium &middot; <strong>Impact:</strong> high &mdash; removes the cleanest &ldquo;just go offline&rdquo; bypass.</p>
+
+    
+    <h2 id="p4-fix6"><span class="n">08</span>Fix 6 — Make the lease meaningful</h2>
+    <p>The 240-second lease (<code>L.A()</code>/<code>L.B()</code>) is armed by the <em>successful</em> paths &mdash; good &mdash; but it&rsquo;s a client-side timer. A patch that calls <code>L.A()</code> unconditionally (or NOPs <code>L.B()</code>) makes it cosmetic. Fix:</p>
+    <ol>
+      <li><strong>Derive the lease from the signed response, not a local call.</strong> The lease token should be a field inside the server&rsquo;s signed payload (session id + expiry). No valid signature &rarr; no lease token, regardless of what the client code does.</li>
+      <li><strong>Cross-check the lease with the timer&rsquo;s validation.</strong> Every 1-minute re-validation must <em>re-arm</em> the lease from a fresh signed response; if validation is skipped, the lease expires and the next check fails.</li>
+      <li><strong>Anti-tamper coverage</strong>: any bypass must now keep the anti-debug, the lease <em>and</em> the timer consistent simultaneously &mdash; three clocks instead of one.</li>
+    </ol>
+    <p><strong>Effort:</strong> low &middot; <strong>Impact:</strong> medium &mdash; cheap, and it de-values naive NOP/<code>ret</code> patches.</p>
+
+    
+    <h2 id="p4-fix7"><span class="n">09</span>Fix 7 — Enforce binary integrity beyond a local hash</h2>
+    <p>The <code>clientBuildId</code>/<code>binaryHash</code> binding is already in the requests (Part 3) &mdash; the flaw is that the <em>client</em> computes it. Fix:</p>
+    <ol>
+      <li><strong>Authenticode + runtime checksums.</strong> Verify the executing assembly&rsquo;s Authenticode signature at startup, and checksum critical methods&rsquo; IL against expected values (or use an obfuscator&rsquo;s anti-tamper).</li>
+      <li><strong>Server-side verification.</strong> Recompute/hash on the server where possible (device attestation, or signed hardware counters). Server rejects unknown hashes before signing anything.</li>
+      <li><strong>Split the hash source.</strong> Compute the hash from <em>multiple</em> sources (file bytes, loaded module base, runtime config) and combine &mdash; a single-file patch becomes a multi-point patch.</li>
+    </ol>
+    <p><strong>Effort:</strong> medium &middot; <strong>Impact:</strong> medium&ndash;high &mdash; makes &ldquo;patch one byte, keep the license&rdquo; materially harder.</p>
+
+    
+    <h2 id="p4-fix8"><span class="n">10</span>Fix 8 — Real anti-debug (kills weakness 5)</h2>
+    <p><code>Debugger.IsAttached</code> and <code>IsDebuggerPresent</code> are two Win32 reads; every debugger removes them in minutes. If you&rsquo;re going to ship anti-debug at all, raise the bar:</p>
+    <ol>
+      <li><strong>DBI detection</strong>: hardware breakpoints (<code>GetThreadContext</code>/<code>SetThreadContext</code> inspection), timing checks, <code>NtQueryInformationProcess</code> for <code>ProcessDebugPort</code>/<code>ProcessDebugObjectHandle</code>, and scanning for known debugger DLLs.</li>
+      <li><strong>Chain to the lease.</strong> The nastiest pattern is the one this product already half-has: don&rsquo;t crash on debug &mdash; just <em>stop re-arming</em>. Debug attach &rarr; validation never completes &rarr; lease expires &rarr; app refuses. The attacker must now disable anti-debug <em>and</em> fake the lease chain.</li>
+      <li><strong>Honest trade-off note</strong>: comprehensive anti-debug belongs in a native host or kernel component, and even then it&rsquo;s bypassable. Budget it as <em>cost-raising</em>, not as a wall.</li>
+    </ol>
+    <p><strong>Effort:</strong> medium &middot; <strong>Impact:</strong> medium &mdash; but cheap to chain onto Fix 6.</p>
+
+    
+    <h2 id="p4-fix9"><span class="n">11</span>Fix 9 — Server-side operations</h2>
+    <p>Everything client-side is secondary to how the server behaves. The cheapest wins are here:</p>
+    <ol>
+      <li><strong>One-time nonces with server-side storage.</strong> Reject any nonce seen twice (Part 3 already checks the client&rsquo;s nonce &mdash; extend it to a server-side replay cache).</li>
+      <li><strong>Rate-limit and throttle</strong> activation/validation per key, per device, per IP. Detect the activation hammer you&rsquo;d expect from key-sharing.</li>
+      <li><strong>Near-real-time revocation.</strong> <code>api/licenses/revocation-status</code> is polled by the client (and the client can be told to ignore it). Move to server-enforced sessions (Fix 3) so revocation means &ldquo;server stops signing&rdquo; &mdash; instant and client-independent.</li>
+      <li><strong>Key hygiene</strong>: separate keys per environment, rotate the signing key, and keep the private key in a KMS/HSM &mdash; never next to the public key in a client binary.</li>
+      <li><strong>Anomaly detection</strong>: device-per-key ratio, activation velocity, offline&rarr;online pattern &mdash; the data this system already generates is enough to flag abuse without any client changes.</li>
+    </ol>
+    <p><strong>Effort:</strong> low&ndash;medium &middot; <strong>Impact:</strong> very high &mdash; a good server costs little and invalidates most client-side games.</p>
+
+    
+    <h2 id="p4-priority"><span class="n">12</span>Priority matrix</h2>
+    <table>
+      <thead><tr><th>Order</th><th>Fix</th><th>Weakness</th><th>Effort</th><th>Impact</th><th>Do it because</th></tr></thead>
+      <tbody>
+        <tr><td class="pri">1</td><td>Fix 9 &mdash; server ops</td><td>&mdash;</td><td>Low</td><td>Very high</td><td>cheapest; kills replay/revocation gaps</td></tr>
+        <tr><td class="pri">2</td><td>Fix 3 &mdash; sessions server-side</td><td>3</td><td>High</td><td>Highest</td><td>removes client as final judge</td></tr>
+        <tr><td class="pri">3</td><td>Fix 5 &mdash; grace window + signed offline tokens</td><td>3</td><td>Medium</td><td>High</td><td>closes the clean offline bypass</td></tr>
+        <tr><td class="pri">4</td><td>Fix 4 &mdash; TPM binding</td><td>4</td><td>Med&ndash;High</td><td>High</td><td>kills copy-<code>activation.dat</code></td></tr>
+        <tr><td class="pri">5</td><td>Fix 1 &mdash; encrypted payload</td><td>1</td><td>Medium</td><td>Very high</td><td>re-does Part 1 from scratch</td></tr>
+        <tr><td class="pri">6</td><td>Fix 2 &mdash; constant protection</td><td>2</td><td>Low&ndash;Med</td><td>High</td><td>kills the reflection dump</td></tr>
+        <tr><td class="pri">7</td><td>Fix 7 &mdash; binary integrity</td><td>3</td><td>Medium</td><td>Med&ndash;High</td><td>de-values one-byte patches</td></tr>
+        <tr><td class="pri">8</td><td>Fix 6 &mdash; lease from signed response</td><td>3</td><td>Low</td><td>Medium</td><td>cheap; de-values NOP/ret patches</td></tr>
+        <tr><td class="pri">9</td><td>Fix 8 &mdash; real anti-debug</td><td>5</td><td>Medium</td><td>Medium</td><td>cost-raiser; chain to Fix 6</td></tr>
+      </tbody>
+    </table>
+    <p>Read the table like this: do <strong>1 and 3 first</strong> (low effort, structural), then <strong>4&ndash;6</strong> (high impact), and treat <strong>7&ndash;9</strong> as hardening on top. Fix 3 is the only one that <em>changes the architecture</em> &mdash; start there if you can.</p>
+
+    
+    <h2 id="p4-closing"><span class="n">13</span>Closing</h2>
+    <p>The three parts before this one read like an attacker&rsquo;s playbook. This part is the owner&rsquo;s playbook. The two share every fact &mdash; which is the point: <strong>the defense is the attack, inverted.</strong></p>
+    <p>And the honest summary, once more: no client-side scheme is unbreakable, because the client always carries the keys to its own cage. What a product <em>can</em> do &mdash; and what this list does &mdash; is push each attack until it costs more than the product is worth. That&rsquo;s not paranoia; that&rsquo;s the design.</p>
+    <blockquote><p><em>&mdash; End of series.</em></p></blockquote>
+  </article>
+
+  <div class="end">
+    <b>&#10003; Series complete.</b> Four parts, one thread: recover the payload &rarr; read the plaintext &rarr; map the gate &rarr; close the holes.
+  </div>
+
+  <footer>
+    <span class="tag">// RE series</span> &mdash; NoMercyAI Visual &middot; by <a href="../index.html">torete</a> &middot; <em>complete</em>
+  </footer>
+
+</div>
+
+<script src="blog.js"></script>
+</body>
+</html>
