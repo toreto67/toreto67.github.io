@@ -127,6 +127,9 @@ img { max-width: 100%; display: block; }
 /* ===== Prose ===== */
 article h2 { font-size: 26px; font-weight: 700; letter-spacing: -.02em; margin: 58px 0 18px; }
 article h2 span.n { font-family: var(--mono); font-size: 15px; color: var(--accent); margin-right: 12px; vertical-align: 2px; }
+article h3 { font-size: 19px; font-weight: 600; letter-spacing: -.015em; margin: 36px 0 12px; color: var(--fg); }
+article h3 .n { font-family: var(--mono); font-size: 13.5px; color: var(--accent); margin-right: 10px; }
+article hr { border: 0; border-top: 1px solid var(--line); margin: 44px 0; }
 article p { margin: 16px 0; color: var(--fg-2); }
 article p strong { color: var(--fg); font-weight: 600; }
 article ul, article ol { margin: 16px 0 16px 24px; color: var(--fg-2); }
@@ -164,6 +167,7 @@ pre.json .jnum { color: var(--num); }
   background: color-mix(in srgb, var(--accent-2) 10%, transparent); color: var(--accent-2);
   border: 1px solid color-mix(in srgb, var(--accent-2) 20%, transparent);
   padding: 1px 7px; border-radius: 6px;
+  overflow-wrap: anywhere;
 }
 
 /* ===== Blockquote ===== */
@@ -182,6 +186,7 @@ td { font-family: var(--mono); font-size: 13.5px; color: var(--fg-2); }
 td:last-child { font-family: var(--sans); font-size: 14px; }
 tbody tr:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
 td.pri { color: var(--gold); font-weight: 700; }
+td.hash { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
 
 /* ===== Terminal ===== */
 .term { background: var(--code-bg); border: 1px solid var(--line); border-radius: 12px; font-family: var(--mono); font-size: 13.5px; margin: 22px 0; overflow: hidden; }
@@ -206,7 +211,7 @@ td.pri { color: var(--gold); font-weight: 700; }
 .card a.link { position: absolute; inset: 0; border-radius: 14px; }
 .card .go { position: relative; display: inline-block; margin-top: 16px; font-family: var(--mono); font-size: 13px; color: var(--accent); text-decoration: none; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
-.chip { font-family: var(--mono); font-size: 12px; color: var(--fg-2); background: var(--bg-3); border: 1px solid var(--line); padding: 3px 10px; border-radius: 999px; }
+.chip { font-family: var(--mono); font-size: 12px; color: var(--fg-2); background: var(--bg-3); border: 1px solid var(--line); padding: 3px 10px; border-radius: 999px; overflow-wrap: anywhere; }
 
 .end { border-left: 3px solid var(--accent); padding: 16px 22px; background: color-mix(in srgb, var(--accent) 6%, transparent); border-radius: 0 10px 10px 0; color: var(--fg-2); font-size: 15px; margin-bottom: 60px; }
 .end b { color: var(--fg); }

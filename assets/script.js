@@ -69,12 +69,20 @@ const DATA = {
     },
   ],
 
-  posts: {
-    n: "NoMercyAI Visual — Full Teardown",
-    d: "A four-part reverse engineering write-up on a 77 MB .NET single-file bundle: recovering the managed payload, defeating the string obfuscation, mapping the ECDSA license system, and the hardening fixes it exposed. Read in one go.",
-    tags: ["RE", ".NET", "4 parts"],
-    url: "blog/index.html",
-  },
+  posts: [
+    {
+      n: "NoMercyAI Visual — Full Teardown",
+      d: "A four-part reverse engineering write-up on a 77 MB .NET single-file bundle: recovering the managed payload, defeating the string obfuscation, mapping the ECDSA license system, and the hardening fixes it exposed. Read in one go.",
+      tags: ["RE", ".NET", "4 parts"],
+      url: "blog/index.html",
+    },
+    {
+      n: "HWIDLoader (OBSIDIAN) — Loader Teardown",
+      d: "A static teardown of a cheat loader: AES-encrypted WebView2 assets recovered from a constant key, a Cap'n Proto RPC backend, two embedded vulnerable kernel drivers used for BYOVD, and a full offline licence bypass.",
+      tags: ["RE", "BYOVD", "Windows"],
+      url: "blog/hwidloader.html",
+    },
+  ],
 
   marquee: [
     "reverse engineering",
@@ -223,18 +231,21 @@ function renderProjects() {
 }
 
 function renderPosts() {
-  const p = DATA.posts;
-  const a = el("a", "post reveal");
-  a.href = p.url;
-  a.innerHTML = `
-    <div class="post__part mono">re blog</div>
-    <div class="post__main">
-      <h3>${p.n}</h3>
-      <p>${p.d}</p>
-      <div class="post__tags">${p.tags.map((t) => `<span>${t}</span>`).join("")}</div>
-    </div>
-    <span class="post__arrow mono">&rarr;</span>`;
-  $("#posts").appendChild(a);
+  const box = $("#posts");
+  box.innerHTML = "";
+  DATA.posts.forEach((p) => {
+    const a = el("a", "post reveal");
+    a.href = p.url;
+    a.innerHTML = `
+      <div class="post__part mono">re blog</div>
+      <div class="post__main">
+        <h3>${p.n}</h3>
+        <p>${p.d}</p>
+        <div class="post__tags">${p.tags.map((t) => `<span>${t}</span>`).join("")}</div>
+      </div>
+      <span class="post__arrow mono">&rarr;</span>`;
+    box.appendChild(a);
+  });
 }
 
 function renderContacts() {

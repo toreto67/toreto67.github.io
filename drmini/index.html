@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DRMini — Windows PE protector</title>
+<meta name="description" content="DRMini protects compiled Windows x86-64 binaries. String encryption, import hiding, code virtualization, anti-debug, anti-dump and watermarking, with graceful degradation instead of broken executables." />
+<meta name="theme-color" content="#030620" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="DRMini — Windows PE protector" />
+<meta property="og:description" content="A PE protector that analyses the image first and degrades instead of handing you a broken binary." />
+<meta property="og:url" content="https://toreto67.github.io/drmini/" />
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='24' fill='%23030620'/%3E%3Cpath d='M50 20 78 34v26L50 74 22 60V34z' fill='none' stroke='%233b82f6' stroke-width='7' stroke-linejoin='round'/%3E%3Cpath d='M50 40 60 46v10l-10 6-10-6V46z' fill='%233b82f6'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <g id="i-shield"><path d="M12 3l8 4v5c0 5-3.5 8.5-8 9.5c-4.5-1-8-4.5-8-9.5V7z"/><path d="M9 12l2 2l4-4"/></g>
+  <g id="i-check"><path d="M5 12l5 5L20 7"/></g>
+  <g id="i-down"><path d="M12 5v14m6-6l-6 6m-6-6l6 6"/></g>
+  <g id="i-right"><path d="M5 12h14m-6 6l6-6m-6-6l6 6"/></g>
+  <g id="i-warn"><path d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></g>
+  <g id="i-cpu"><rect x="5" y="5" width="14" height="14" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></g>
+  <g id="i-quotes"><path d="M7 15h3a2 2 0 0 0 2-2V6a1 1 0 0 0-1-1H6a1 1 0 0 0-1 1v6a2 2 0 0 0 2 2zM17 15h3a2 2 0 0 0 2-2V6a1 1 0 0 0-1-1h-5a1 1 0 0 0-1 1v6a2 2 0 0 0 2 2z"/></g>
+  <g id="i-eyeoff"><path d="M3 3l18 18M10.6 10.6a3 3 0 0 0 4.2 4.2M9.4 5.3A9.8 9.8 0 0 1 12 5c7 0 10 7 10 7a17.6 17.6 0 0 1-2.3 3.3M6.2 6.2A17 17 0 0 0 2 12s3 7 10 7a9.7 9.7 0 0 0 4.1-.9"/></g>
+  <g id="i-lock"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></g>
+  <g id="i-bug"><path d="M9 6a3 3 0 0 1 6 0M12 2v3M4 13h4M16 13h4M5 9l2.5 2M19 9l-2.5 2M8 19a4 4 0 0 1 8 0M8 19h8v-2a4 4 0 0 0-8 0z"/></g>
+  <g id="i-fprint"><path d="M12 11a1 1 0 0 1 1 1c0 2-.5 4-1 6M8 12a4 4 0 0 1 8 0c0 1.5-.2 3-.6 4.4M16 16.5c-.3 1.2-.8 2.4-1.4 3.4M6 12a6 6 0 0 1 12 0M5 16.5c.4 1 .9 2 1.5 2.9M4 20a12 12 0 0 0 2-3.5M20 20a12 12 0 0 1-1.5-3.2"/></g>
+  <g id="i-tree"><path d="M14 6a2 2 0 1 0-4 0a2 2 0 0 0 4 0m-7 8a2 2 0 1 0-4 0a2 2 0 0 0 4 0m14 0a2 2 0 1 0-4 0a2 2 0 0 0 4 0m-7 4a2 2 0 1 0-4 0a2 2 0 0 0 4 0M12 8v8m-5.7-3.5l4.4-5m7 5l-4.4-5"/></g>
+  <g id="i-discord"><path d="M8 12a1 1 0 1 0 2 0a1 1 0 0 0-2 0m6 0a1 1 0 1 0 2 0a1 1 0 0 0-2 0"/><path d="M15.5 17c0 1 1.5 3 2 3c1.5 0 2.833-1.667 3.5-3c.667-1.667.5-5.833-1.5-11.5c-1.457-1.015-3-1.34-4.5-1.5l-.972 1.923a11.9 11.9 0 0 0-4.053 0L9 4c-1.5.16-3.043.485-4.5 1.5c-2 5.667-2.167 9.833-1.5 11.5c.667 1.333 2 3 3.5 3c.5 0 2-2 2-3"/><path d="M7 16.5c3.5 1 6.5 1 10 0"/></g>
+  <g id="i-tg"><path d="M15 10l-4 4m5 2l1 6l-3.5-2.5L7 22l1-5M16 9L6 9l3 2m2-3l6 3m-8 5l3 2"/></g>
+  <g id="i-moon"><path d="M12 3a6 6 0 0 0 9 9a9 9 0 1 1-9-9"/></g>
+  <g id="i-sun"><circle cx="12" cy="12" r="4"/><path d="M3 12h1M20 12h1M12 3v1M12 20v1M5.6 5.6l.7.7M17.7 17.7l.7.7M5.6 18.4l.7-.7M17.7 6.3l.7-.7"/></g>
+  <g id="i-menu"><path d="M4 6h16M4 12h16M4 18h16"/></g>
+  <g id="i-x"><path d="M6 6l12 12M18 6L6 18"/></g>
+  <g id="i-github"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2c2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2a4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C5.4 2.8 4.3 3.1 4.3 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 3 9.5c0 4.6 2.7 5.7 5.5 6c-.6.6-.6 1.2-.5 2V21"/></g>
+</defs></svg>
+
+<div class="ann">
+  <div class="ann__inner">
+    <span class="ann__tag">In development</span>
+    <span>DRMini is a private build. Everything here describes the current pipeline.</span>
+    <a href="#access">Ask for access &rarr;</a>
+  </div>
+</div>
+
+<header class="hdr" id="hdr">
+  <div class="wrap hdr__in">
+    <a class="hdr__logo" href="#top">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"/></svg>
+      DRMini
+      <span class="hdr__tag">x64</span>
+    </a>
+    <nav class="hdr__nav">
+      <a href="#capabilities">Capabilities</a>
+      <a href="#safety">Safety</a>
+      <a href="#pipeline">Pipeline</a>
+      <a href="#config">Config</a>
+      <a href="#workflow">Workflow</a>
+    </nav>
+    <div class="hdr__side">
+      <a class="iconbtn" href="https://discord.com/users/1354485153359069445" target="_blank" rel="noopener" aria-label="Discord"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-discord"/></svg></a>
+      <button class="iconbtn" id="theme" type="button" aria-label="Toggle theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="only-dark"><use href="#i-moon"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="only-light"><use href="#i-sun"/></svg>
+      </button>
+      <button class="iconbtn burger" id="burger" type="button" aria-label="Menu" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-menu"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="navsheet" id="navsheet">
+  <a href="#capabilities">Capabilities</a>
+  <a href="#safety">Safety</a>
+  <a href="#pipeline">Pipeline</a>
+  <a href="#config">Config</a>
+  <a href="#workflow">Workflow</a>
+  <a href="#access">Access</a>
+</div>
+
+<main id="top">
+
+  <section class="hero">
+    <div class="hero__grid" aria-hidden="true"></div>
+    <div class="hero__glow hero__glow--a" aria-hidden="true"></div>
+    <div class="hero__glow hero__glow--b" aria-hidden="true"></div>
+
+    <div class="wrap hero__in">
+      <div class="rv">
+        <h1>A PE protector that will not hand you a broken binary.</h1>
+        <p class="hero__sub">DRMini rewrites compiled Windows x86-64 executables and DLLs: strings encrypted, imports hidden, code virtualized, watermark stamped. It analyses the image first, then applies only what the binary can survive.</p>
+        <div class="hero__cta">
+          <a class="btn btn--p" href="#capabilities">Explore capabilities <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-down"/></svg></a>
+          <a class="btn" href="#access">Request access <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-right"/></svg></a>
+        </div>
+        <ul class="hero__list">
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>Windows PE</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>x86-64</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>EXE and DLL</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>No source changes</li>
+        </ul>
+      </div>
+
+      <div class="rv">
+        <div class="pcard">
+          <div class="pcard__bar"><i></i><i></i><i></i><span>protection profile</span></div>
+          <ol>
+            <li class="pstep">
+              <span class="pstep__n">01</span>
+              <div class="pstep__body">
+                <div class="pstep__h"><h3>Analyze</h3><span class="pstatus">PE capabilities</span></div>
+                <p class="pstep__d">Code section, import directory, bound imports, exports, .NET metadata, dynamic base, relocations and TLS callbacks. The result decides what runs.</p>
+                <div class="pchips"><span>import dir</span><span>exports</span><span>.NET</span><span>relocations</span><span>TLS</span></div>
+              </div>
+            </li>
+            <li class="pstep">
+              <span class="pstep__n">02</span>
+              <div class="pstep__body">
+                <div class="pstep__h"><h3>Protect</h3><span class="pstatus pstatus--on">composable passes</span></div>
+                <p class="pstep__d">Every pass is independent. Whatever the image cannot support is dropped and recorded, never forced.</p>
+                <div class="pchips"><span>strings</span><span>imports</span><span>code</span><span>VM</span><span>anti-debug</span><span>watermark</span></div>
+              </div>
+            </li>
+            <li class="pstep">
+              <span class="pstep__n">03</span>
+              <div class="pstep__body">
+                <div class="pstep__h"><h3>Rebuild</h3><span class="pstatus">degrade, never fail</span></div>
+                <p class="pstep__d">Output is written, measured and reported. If a pass had to be skipped, the reason is in the summary line.</p>
+                <div class="pchips"><span>report</span><span>measure</span><span>working exe</span></div>
+              </div>
+            </li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="strip">
+    <div class="wrap strip__in">
+      <div><b>Windows PE</b><span>Native x86-64</span></div>
+      <div><b>EXE and DLL</b><span>Drag and drop</span></div>
+      <div><b>No source changes</b><span>Post-compile</span></div>
+      <div><b>MSVC + vcpkg</b><span>C++ and Zydis</span></div>
+      <div><b>JSON profile</b><span>drmini.json</span></div>
+    </div>
+  </section>
+
+  <section class="band band--tint" id="capabilities">
+    <div class="wrap">
+      <div class="band__head rv">
+        <p class="label">Protection stack</p>
+        <h2>Composable passes, not one opaque preset.</h2>
+        <p class="band__sub">Build a focused profile instead of turning on everything. Every protection below is a switch in <span class="mono">drmini.json</span>.</p>
+      </div>
+      <div class="caps" id="caps"></div>
+    </div>
+  </section>
+
+  <section class="band" id="safety">
+    <div class="wrap">
+      <div class="band__head rv">
+        <p class="label">Why it is built this way</p>
+        <h2>Stability is a requirement, not an afterthought.</h2>
+        <p class="band__sub">Obfuscation only matters if the protected binary still behaves like the original. An unstable protector costs more in re-testing than it ever gains in resistance.</p>
+      </div>
+      <div class="safety">
+        <ul class="checks rv">
+          <li>
+            <i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></i>
+            <div>
+              <h3>Analysis before transformation</h3>
+              <p>The code section, import directory, bound imports, export table, .NET metadata, dynamic base, relocations and existing TLS callbacks are all inspected before a single byte is rewritten. What it finds is what decides the profile.</p>
+            </div>
+          </li>
+          <li>
+            <i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></i>
+            <div>
+              <h3>Graceful degradation</h3>
+              <p>When a pass would produce an executable that cannot start, it is disabled instead of applied. The reason is recorded and printed, so there is never a question about what you actually got.</p>
+            </div>
+          </li>
+          <li>
+            <i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></i>
+            <div>
+              <h3>String detection is triple-checked</h3>
+              <p>Candidate strings are confirmed with a dedicated pass before anything is encrypted, so instruction bytes and pointers that merely look like text do not get destroyed along with them.</p>
+            </div>
+          </li>
+          <li>
+            <i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></i>
+            <div>
+              <h3>Nothing happens silently</h3>
+              <p>Symbols stripped, sections removed, strings encrypted, imports hidden, bytes encrypted, regions virtualized, watermark written. Every count ends up in the report.</p>
+            </div>
+          </li>
+        </ul>
+
+        <div class="facts rv">
+          <div class="fact">
+            <p>Architectures</p>
+            <h3>x86-64</h3>
+            <span>Native Windows PE, no emulation layer in between.</span>
+          </div>
+          <div class="fact">
+            <p>Binary formats</p>
+            <h3>EXE, DLL</h3>
+            <span>Any PE the loader will accept, including signed and .NET images.</span>
+          </div>
+          <div class="fact">
+            <p>Toolchain</p>
+            <h3>MSVC, vcpkg</h3>
+            <span>C++ with Zydis for disassembly and the PE work.</span>
+          </div>
+          <div class="fact">
+            <p>Integration</p>
+            <h3>Drag and drop</h3>
+            <span>One executable, one JSON file, no installer and no runtime dependency.</span>
+          </div>
+          <div class="notecard">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-warn"/></svg>
+            <div>
+              <h3>A protector that breaks your build is a liability.</h3>
+              <p>That is why every protection is independently toggleable, why the profile is explicit, and why anything the image cannot support is reported rather than forced. A clean report is a better outcome than a silent failure.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band band--dark" id="pipeline">
+    <div class="wrap">
+      <div class="band__head rv">
+        <p class="label">The pipeline</p>
+        <h2>Ten stages, in the order the engine runs them.</h2>
+        <p class="band__sub">Each stage reports progress and each one can degrade instead of failing. This is what actually happens when you drop a binary on it.</p>
+      </div>
+      <div class="pr">
+        <ol class="steps rv" id="steps"></ol>
+        <div class="code rv">
+          <div class="code__bar"><i></i><i></i><i></i><b>stdout</b></div>
+          <pre id="report"></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="config">
+    <div class="wrap">
+      <div class="band__head rv">
+        <p class="label">Configuration</p>
+        <h2>One JSON file next to the executable.</h2>
+        <p class="band__sub">If it is missing, DRMini writes it with the defaults on the first run. Every key below maps to one pass.</p>
+      </div>
+      <div class="cfg">
+        <div class="code rv">
+          <div class="code__bar"><i></i><i></i><i></i><b>drmini.json</b></div>
+<pre><span class="tk-k">"debug"</span>: {
+  <span class="tk-k">"stripSymbols"</span>: <span class="tk-c">true</span>,
+  <span class="tk-k">"stripDebugSections"</span>: <span class="tk-c">true</span>
+},
+<span class="tk-k">"strings"</span>: {
+  <span class="tk-k">"encrypt"</span>: <span class="tk-c">true</span>,
+  <span class="tk-k">"minLength"</span>: <span class="tk-n">3</span>,
+  <span class="tk-k">"runtimeReencrypt"</span>: <span class="tk-n">false</span>,
+  <span class="tk-k">"zeroize"</span>: <span class="tk-c">true</span>,
+  <span class="tk-k">"intervalMs"</span>: <span class="tk-n">1500</span>,
+  <span class="tk-k">"windowMs"</span>: <span class="tk-n">40</span>
+},
+<span class="tk-k">"imports"</span>: {
+  <span class="tk-k">"hide"</span>: <span class="tk-c">true</span>,
+  <span class="tk-k">"runtimeReencrypt"</span>: <span class="tk-c">true</span>,
+  <span class="tk-k">"intervalMs"</span>: <span class="tk-n">2000</span>,
+  <span class="tk-k">"windowMs"</span>: <span class="tk-n">12</span>
+},
+<span class="tk-k">"antiDebug"</span>: <span class="tk-c">true</span>,
+<span class="tk-k">"antiDump"</span>: <span class="tk-c">true</span>,
+<span class="tk-k">"antiVm"</span>: <span class="tk-n">false</span>,
+<span class="tk-k">"virtualize"</span>: <span class="tk-c">true</span>,
+<span class="tk-k">"encryptCode"</span>: <span class="tk-c">true</span>,
+<span class="tk-k">"lazy"</span>: <span class="tk-c">true</span>,
+<span class="tk-k">"lazyIntervalMs"</span>: <span class="tk-n">50</span>,
+<span class="tk-k">"watermark"</span>: <span class="tk-c">true</span></pre>
+        </div>
+        <div class="kv rv" id="kv"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band band--tint" id="workflow">
+    <div class="wrap">
+      <div class="band__head rv">
+        <p class="label">Workflow</p>
+        <h2>From binary to protected build.</h2>
+        <p class="band__sub">No installer, no account, no upload. The whole thing happens on your machine.</p>
+      </div>
+      <div class="flow">
+        <article class="rv">
+          <span>01</span>
+          <h3>Drop it in</h3>
+          <p>Drag an executable onto <span class="mono">drmini.exe</span>, or pass the path as an argument. The output is written next to the input with a <span class="mono">.drmini.exe</span> suffix.</p>
+        </article>
+        <article class="rv">
+          <span>02</span>
+          <h3>Tune the profile</h3>
+          <p><span class="mono">drmini.json</span> lives next to the executable. Turn on what you need, leave the rest off, and re-run if the report says something was skipped.</p>
+        </article>
+        <article class="rv">
+          <span>03</span>
+          <h3>Read the report</h3>
+          <p>A single summary line tells you what was stripped, encrypted, hidden, virtualized and stamped, plus every pass that had to be dropped to keep the binary working.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta" id="access">
+    <div class="wrap">
+      <div class="cta__box rv">
+        <div class="cta__in">
+          <p>Private build</p>
+          <h2>Protect the binary you actually ship.</h2>
+          <p>DRMini is not released yet. If you have something that needs protecting, or you just want to test it against your own tooling, get in touch and it can be arranged.</p>
+        </div>
+        <div class="cta__act">
+          <a class="btn btn--l" href="https://discord.com/users/1354485153359069445" target="_blank" rel="noopener">Discord <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-right"/></svg></a>
+          <a class="btn" style="background:transparent;color:#fff;border-color:rgba(255,255,255,.35)" href="https://t.me/trainsick" target="_blank" rel="noopener">Telegram</a>
+          <p class="cta__note">discord: trainsick</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="ftr">
+  <div class="wrap">
+    <div class="ftr__grid">
+      <div>
+        <div class="ftr__logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"/></svg>
+          DRMini
+        </div>
+        <p class="ftr__about">A Windows PE protector built around one rule: a protected binary that does not start is not protection, it is a bug.</p>
+      </div>
+      <div>
+        <h4>Product</h4>
+        <ul>
+          <li><a href="#capabilities">Capabilities</a></li>
+          <li><a href="#safety">Safety</a></li>
+          <li><a href="#pipeline">Pipeline</a></li>
+          <li><a href="#config">Config</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Author</h4>
+        <ul>
+          <li><a href="https://github.com/toreto67" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="../index.html">torete</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Contact</h4>
+        <ul>
+          <li><a href="https://discord.com/users/1354485153359069445" target="_blank" rel="noopener">Discord</a></li>
+          <li><a href="https://t.me/trainsick" target="_blank" rel="noopener">Telegram</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="ftr__bot">
+      <p>DRMini &middot; not released &middot; all rights reserved</p>
+      <div class="ftr__soc">
+        <a class="iconbtn" href="https://github.com/toreto67" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-github"/></svg></a>
+        <a class="iconbtn" href="https://discord.com/users/1354485153359069445" target="_blank" rel="noopener" aria-label="Discord"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-discord"/></svg></a>
+        <a class="iconbtn" href="https://t.me/trainsick" target="_blank" rel="noopener" aria-label="Telegram"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-tg"/></svg></a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/script.js"></script>
+</body>
+</html>

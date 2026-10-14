@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HWIDLoader (OBSIDIAN) &mdash; Loader Teardown | torete</title>
+<meta name="description" content="A static teardown of HWIDLoader.exe, the loader behind OBSIDIAN: AES-encrypted WebView2 assets, a Cap'n Proto RPC backend, two embedded vulnerable kernel drivers used for BYOVD, and a full offline licence bypass.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="blog.css">
+</head>
+<body>
+
+<header class="hero" id="top">
+  <div class="container">
+    <span class="kicker">Reverse Engineering &middot; Loader Teardown</span>
+    <h1><em>HWIDLoader</em> &mdash; the OBSIDIAN loader, taken apart</h1>
+    <p class="sub">A native C++ shell that serves a full web UI from inside WebView2, talks to its backend over a binary Cap'n Proto RPC, and ships two vulnerable kernel drivers for BYOVD &mdash; mapped end to end from static analysis alone.</p>
+    <div class="meta">
+      <span>Binary: <b>HWIDLoader.exe</b></span>
+      <span>Product: <b>OBSIDIAN</b></span>
+      <span>Size: <b>30,118,912 bytes</b></span>
+      <span>Method: <b>static only</b></span>
+    </div>
+  </div>
+</header>
+
+<div class="container">
+
+  <nav class="series">
+    <h4>Contents</h4>
+    <ol>
+      <li><a href="#s1">Executive summary</a></li>
+      <li><a href="#s2">PE structure</a></li>
+      <li><a href="#s3">Encrypted resources and cryptography</a></li>
+      <li><a href="#s4">Asset contents</a></li>
+      <li><a href="#s5">Application architecture</a></li>
+      <li><a href="#s6">Authentication flow</a></li>
+      <li><a href="#s7">Embedded kernel drivers</a></li>
+      <li><a href="#s8">Licence bypass</a></li>
+      <li><a href="#s9">Indicators of compromise</a></li>
+      <li><a href="#s10">Conclusion</a></li>
+    </ol>
+  </nav>
+
+  <article>
+
+    <p><strong>Author's mark:</strong> <code>torete76</code> &mdash; <strong>Binary:</strong> <code>HWIDLoader.exe</code>, 30,118,912 bytes (<code>0x1CB9400</code>), PE64, GUI, 7 sections.</p>
+    <table>
+      <thead><tr><th>Artefact</th><th>SHA-256</th></tr></thead>
+      <tbody>
+        <tr><td>HWIDLoader.exe</td><td class="hash">4ce0beac926c1ab88d32b44fc1ccdc6c31f7f5867370749f9ca1b9f77038b5fc</td></tr>
+        <tr><td>HWIDLoader_patched.exe</td><td class="hash">bd982ce061d1351f572ee7dad289e7e46ab9958c38725fa5ca5b5b243882fccd</td></tr>
+        <tr><td>HWIDLoader_patched_nosession.exe</td><td class="hash">2733b57cb94b63e51f886d447e2d81963c2a33f7dc2349679669eebe3d0fba3a</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="s1"><span class="n">01</span>Executive summary</h2>
+    <p><code>HWIDLoader.exe</code> is the <em>loader</em> for the product <strong>OBSIDIAN</strong> (domain <code>obsidian.pub</code>, Telegram channel <code>t.me/obsidianpub</code>), a <strong>HWID spoofer / cheat loader</strong> aimed at games with anti-cheat. The application is a <strong>native C++ shell</strong> that:</p>
+    <ol>
+      <li>Decrypts and serves a <strong>complete web interface (HTML/JS)</strong> inside a <strong>WebView2 (Edge Chromium)</strong> virtual host, <code>appassets.local</code>.</li>
+      <li>Talks to its server over a <strong>binary Cap'n Proto RPC</strong> (internal protocol &ldquo;SecretRPC/SecretHandshake&rdquo;).</li>
+      <li>Carries <strong>two x64 kernel drivers</strong> embedded in <code>.rdata</code>, used for <strong>BYOVD</strong> (Bring Your Own Vulnerable Driver): <strong><code>EneIo64.sys</code></strong> (ENE/G.SKILL, CVE-2020-12446) to obtain physical-memory R/W and <strong>map</strong> into the kernel, and <strong><code>ThrottleStop.sys</code></strong> (TechPowerUp &ldquo;Low-Level Driver&rdquo;, CVE-2025-7771) as an arbitrary R/W primitive.</li>
+    </ol>
+    <p>The original binary is <strong>only partially protected</strong>: the assets are encrypted in <code>.rsrc</code> with <strong>AES-256-CBC</strong> and the JS is obfuscated with <code>javascript-obfuscator</code>, but the key/IV are constants sitting in <code>.rdata</code> and the native code relies on obfuscated strings. The real business logic (licences, cheats, HV, seeds) is <strong>100% server-side</strong>.</p>
+
+    <h2 id="s2"><span class="n">02</span>PE structure</h2>
+    <table>
+      <thead><tr><th>Section</th><th>VA</th><th>VirtualSize</th><th>Raw</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>.text</td><td>0x1000</td><td>0xCE1A8C</td><td>0xCE1C00</td><td>Native code (obfuscated)</td></tr>
+        <tr><td>.rdata</td><td>0xCE3000</td><td>0x15AB0A</td><td>0x15AC00</td><td>Constants, <strong>AES key/IV</strong>, embedded drivers</td></tr>
+        <tr><td>.data</td><td>0xE3E000</td><td>0x26EA4</td><td>0x20E00</td><td></td></tr>
+        <tr><td>.pdata</td><td>0xE65000</td><td>0x1EC84</td><td>0x1EE00</td><td></td></tr>
+        <tr><td>.fptable</td><td>0xE84000</td><td>0x100</td><td>0x200</td><td></td></tr>
+        <tr><td>.rsrc</td><td>0xE85000</td><td>0xE37FE8</td><td>0xE38000</td><td><strong>Encrypted resources</strong></td></tr>
+        <tr><td>.reloc</td><td>0x1CBD000</td><td>0x4818</td><td>0x4A00</td><td></td></tr>
+      </tbody>
+    </table>
+    <ul>
+      <li><code>SectionAlignment</code> = <code>0x1000</code>, <code>FileAlignment</code> = <code>0x200</code>.</li>
+      <li>It imports <code>bcrypt.dll</code> (<code>BCrypt*</code>), <code>kernel32</code>, <code>user32</code>, <code>shlwapi</code>, <code>advapi32</code>, etc. <strong>No</strong> static import of <code>WebView2Loader.dll</code> &mdash; WebView2 is loaded dynamically (<code>LoadLibrary</code>/<code>GetProcAddress</code>).</li>
+    </ul>
+
+    <h2 id="s3"><span class="n">03</span>Encrypted resources and cryptography</h2>
+    <p>The type-<code>10</code> resources (<code>RT_RCDATA</code>) named <strong>101 / 102 / 103</strong> are encrypted:</p>
+    <table>
+      <thead><tr><th>Name</th><th>RVA</th><th>Size</th><th>Plaintext</th></tr></thead>
+      <tbody>
+        <tr><td>101</td><td>0xE85100</td><td>0x40D60 (265,568)</td><td>index.html</td></tr>
+        <tr><td>102</td><td>0xEC5E60</td><td>0x30C80 (199,808)</td><td>app.js</td></tr>
+        <tr><td>103</td><td>0xEF6AE0</td><td>0xDC6380 (14,443,392)</td><td>data.pak</td></tr>
+        <tr><td>24/1</td><td>0x1CBCE60</td><td>0x188</td><td>Manifest</td></tr>
+      </tbody>
+    </table>
+
+    <h3><span class="n">3.1</span>Decryption routine (RVA <code>0x2D0010</code>)</h3>
+<pre><code><span class="tok-c">FindResourceW(...)      ; caller RVA 0x2D0088</span>
+<span class="tok-c">LoadResource(...)       ; RVA 0x2D00BC</span>
+<span class="tok-c">SizeofResource(...)     ; RVA 0x2D00F0</span>
+<span class="tok-c">LockResource(...)       ; RVA 0x2D010F</span>
+BCryptOpenAlgorithmProvider(<span class="tok-k">BCRYPT_AES_ALGORITHM</span>)         <span class="tok-c">; ~0x2D017B</span>
+BCryptSetProperty(hAlg, <span class="tok-s">"ChainingMode"</span>, <span class="tok-s">"ChainingModeCBC"</span>) <span class="tok-c">; ~0x2D01BA</span>
+BCryptGenerateSymmetricKey(... <span class="tok-n">32</span>-byte key ...)            <span class="tok-c">; ~0x2D0207</span>
+BCryptDecrypt(... <span class="tok-k">BCRYPT_BLOCK_PADDING</span> ...)                <span class="tok-c">; 0x2D02BB (query) / 0x2D0377 (real)</span></code></pre>
+
+    <h3><span class="n">3.2</span>Parameters (constants in <code>.rdata</code>)</h3>
+    <ul>
+      <li><strong>Algorithm:</strong> AES-256-CBC with <strong>PKCS#7</strong> padding.</li>
+      <li><strong>Key (32 B)</strong> @ <code>.rdata</code> <code>0xCE6E30</code>:</li>
+    </ul>
+<pre><code>7c4fa12e9bd3558812ee7a406bc933215d18f6ab44779002c13e6fb8295ae407</code></pre>
+    <ul>
+      <li><strong>IV (16 B)</strong> @ <code>.rdata</code> <code>0xCE6E50</code>:</li>
+    </ul>
+<pre><code>a1592cd73f846b109e47c52288be0573</code></pre>
+    <p>Confirmed by <strong>round-trip</strong>: decrypting and then re-encrypting resource #102 reproduces the original ciphertext <strong>exactly</strong> (padding = 4 bytes), which pins down key, IV, CBC and PKCS#7.</p>
+
+    <h3><span class="n">3.3</span>Extraction</h3>
+    <span class="filename">decrypt_assets.py</span>
+<pre><code><span class="tok-k">from</span> cryptography.hazmat.primitives.ciphers <span class="tok-k">import</span> Cipher, algorithms, modes
+
+KEY = <span class="tok-fn">bytes.fromhex</span>(<span class="tok-s">'7c4fa12e9bd3558812ee7a406bc933215d18f6ab44779002c13e6fb8295ae407'</span>)
+IV  = <span class="tok-fn">bytes.fromhex</span>(<span class="tok-s">'a1592cd73f846b109e47c52288be0573'</span>)
+
+ct  = exe[<span class="tok-n">0xEBD860</span>:<span class="tok-n">0xEBD860</span> + <span class="tok-n">0x30C80</span>]
+pt  = Cipher(algorithms.<span class="tok-fn">AES</span>(KEY), modes.<span class="tok-fn">CBC</span>(IV)).<span class="tok-fn">decryptor</span>().<span class="tok-fn">update</span>(ct)  <span class="tok-c"># + finalize()</span>
+content = pt[:-<span class="tok-n">4</span>]   <span class="tok-c"># strip PKCS#7</span></code></pre>
+    <p>Result in <code>dec\</code>: <code>index.html</code>, <code>app.js</code>, <code>data.pak</code>.</p>
+
+    <h2 id="s4"><span class="n">04</span>Asset contents</h2>
+
+    <h3><span class="n">4.1</span><code>index.html</code> &mdash; the UI (265,568 B)</h3>
+    <p>The loader's full interface (dark &ldquo;OBSIDIAN&rdquo; theme): auth page, sidebar, tabs (home, cleaners, seeds/HWID, dev, settings), inline SVG icons. It loads a classic script:</p>
+<pre><code><span class="tok-c">&lt;script src="app.js"&gt;&lt;/script&gt;</span></code></pre>
+
+    <h3><span class="n">4.2</span><code>app.js</code> &mdash; the logic (199,808 B, obfuscated)</h3>
+    <p>Obfuscated with <strong>javascript-obfuscator</strong>:</p>
+    <ul>
+      <li>A string array plus a <strong>decoder</strong> <code>a0_0x920e(idx) = ARRAY[idx - 0xB3]</code>, with <strong>base64</strong> entries.</li>
+      <li>An array-rotation function in an IIFE with seed <code>(a0_0x2372, 0xDB8E5)</code>.</li>
+      <li>Self-defence anti-debug (a <code>Function.prototype.toString</code> check) &mdash; removable with no side effect.</li>
+    </ul>
+    <p><strong>Deobfuscation:</strong> the decoder was rebuilt and <strong>2,394 strings</strong> were resolved (0 failures), across 94 aliases. Examples:</p>
+    <table>
+      <thead><tr><th>idx</th><th>string</th></tr></thead>
+      <tbody>
+        <tr><td>0x380</td><td>webview</td></tr>
+        <tr><td>0x4b1</td><td>stringify</td></tr>
+        <tr><td>0x56a</td><td>postMessage</td></tr>
+      </tbody>
+    </table>
+    <p>Output: <code>dec\app.deob.js</code>.</p>
+
+    <h3><span class="n">4.3</span><code>data.pak</code> (14,443,392 B)</h3>
+    <p>A custom container format, <strong>&ldquo;PAK17&rdquo;</strong>:</p>
+<pre><code>magic  <span class="tok-s">"PAK17\0\0\0"</span>       (8 bytes)
++ u32 ...
+entries: [u32 nameLen][name][u32 size][data]  (repeated)</code></pre>
+    <p>It holds <strong>55 PNGs</strong> (game thumbnails and logos) extracted to <code>dec\pak\</code>. It contains <strong>no</strong> executable payloads; it is purely cosmetic (game cards grouped by anti-cheat: EAC, BattlEye, Vanguard, nProtect, ACE, XIGNCODE3, Blizzard Warden, and so on).</p>
+
+    <h2 id="s5"><span class="n">05</span>Application architecture</h2>
+<pre><code> ┌──────────────────────────────────────────────────────────────┐
+ │  HWIDLoader.exe (native C++ / MSVC, obfuscated)              │
+ │                                                              │
+ │   WebView2 (Edge Chromium, loaded dynamically)               │
+ │    virtual host: https://appassets.local/index.html          │
+ │    ├── index.html   (resource #101)                          │
+ │    ├── app.js       (resource #102)                          │
+ │    └── data.pak     (resource #103)                          │
+ │                                                              │
+ │   postMessage bridge (JSON)                                  │
+ │    JS   →  chrome.webview.postMessage(JSON.stringify({...})) │
+ │    native → window.chrome.webview.addEventListener('message')│
+ │                                                              │
+ │   Cap'n Proto RPC  ("SecretRPC" / "SecretHandshake")         │
+ │    schema embedded in .rdata                                 │
+ │    origin project: E:\ReworkedHV\tools\deps\capnproto\...    │
+ └──────────────────────────────────────────────────────────────┘
+              │ TLS
+              ▼
+   support.loader.pub / obsidian.pub / status.obsidian.pub</code></pre>
+    <ul>
+      <li>The JS bridge is <code>bridge(action, params)</code> &rarr; <code>window['chrome']['webview']['postMessage'](JSON.stringify({action, params}))</code>.</li>
+      <li>The native side replies with <code>{action, ...}</code> messages that the JS handles in a <code>switch</code>.</li>
+      <li>The literal string <code>"action"</code> does <strong>not</strong> exist anywhere in the native binary (0 occurrences), and neither do registry/device paths in plaintext &rarr; the native dispatch is obfuscated (constant <code>movabs</code> values, MBA arithmetic).</li>
+    </ul>
+
+    <h3><span class="n">5.1</span>JS &rarr; native actions (recovered from the JS)</h3>
+    <div class="chips">
+      <span class="chip">authenticate {key}</span>
+      <span class="chip">getSpooferSeed</span>
+      <span class="chip">runCleaner {id,folder}</span>
+      <span class="chip">restoreRegistry</span>
+      <span class="chip">refreshLicenses</span>
+      <span class="chip">enableMicrosoftHv</span>
+      <span class="chip">disableMicrosoftHv</span>
+      <span class="chip">applySetupFixes {disableMsHv,applyRegistry}</span>
+      <span class="chip">openExternal {url}</span>
+      <span class="chip">downloadUpdate</span>
+      <span class="chip">drag</span>
+    </div>
+
+    <h3><span class="n">5.2</span>Cap'n Proto API (recovered from the schema in <code>.rdata</code>)</h3>
+    <ul>
+      <li><code>AuthenticationService { authenticate, downloadUpdate }</code> &rarr; <code>AuthResult { success, reason, expiry, reseller, session, existingKey, createdAt, keyDuration, publicId, hmacKey, needsUpdate, updateFileSize, expectedHash, maintenance, stableHvAvailable, announcement, licenses, keyType, manualDownloadUrl }</code></li>
+      <li><code>AuthenticatedSession { ping, heartbeat, getSupportToken, redeemProlong, getCheatService, getSeedService, getLogService, getPDBService, getHeadacheService }</code></li>
+      <li><code>CheatService { getOwnedCheats, requestBypass, requestVmcallKey, getBypassSize, getBypass, requestSpooferFixes, getSpooferSeed, setSpooferSeed, getHvBlob, sendHvBlob, requestCheat, getInternalModule, getAllCleaners, getCleaner, checkBuildStatus, verifyAndFixRegistry, getLicenseBlob }</code></li>
+      <li><code>SeedService { getAllSeeds, createNewSeed, deleteSeed, activateSeed, generateSeed }</code> &rarr; <code>Seed { name, seed, display, active, banned }</code></li>
+      <li><code>ClientService</code> (local): <code>getHwid, getHwidV2, getSteamUsers, getRegistryService, getFilesystemService, getLoaderService, runSystemCommand, checkIfHvLoaded, setLastPreHVCode</code></li>
+      <li><code>RegistryService</code> (local).</li>
+    </ul>
+
+    <h2 id="s6"><span class="n">06</span>Authentication flow (licence)</h2>
+    <p>In <code>app.js</code>:</p>
+    <span class="filename">app.js &mdash; doAuthenticate()</span>
+<pre><code><span class="tok-k">function</span> <span class="tok-fn">doAuthenticate</span>(){
+  <span class="tok-k">const</span> key = document.<span class="tok-fn">getElementById</span>(<span class="tok-s">"auth-key"</span>).value.<span class="tok-fn">trim</span>().<span class="tok-fn">toLowerCase</span>();
+  <span class="tok-k">if</span>(!key){ <span class="tok-fn">setMsg</span>(<span class="tok-s">'auth-msg'</span>,<span class="tok-s">'Enter your license key.'</span>,<span class="tok-s">'error'</span>); <span class="tok-k">return</span>; }
+  <span class="tok-k">if</span>(<span class="tok-s">/^[a-z0-9]{6}_[a-z0-9]{6}_[a-z0-9]{6}_[a-z0-9]{6}$/</span>.<span class="tok-fn">test</span>(key)){
+     <span class="tok-fn">setMsg</span>(<span class="tok-s">'auth-msg'</span>,<span class="tok-s">'Invalid key format. Expected: xxxxxx_xxxxxx_xxxxxx_xxxxxx'</span>,<span class="tok-s">'error'</span>); <span class="tok-k">return</span>;
+  }
+  document.<span class="tok-fn">getElementById</span>(<span class="tok-s">'auth-btn'</span>).disabled = <span class="tok-k">true</span>;
+  <span class="tok-fn">bridge</span>(<span class="tok-s">'authenticate'</span>, { key });
+}</code></pre>
+    <p>The native side validates against the server (Cap'n Proto) and replies with <code>{action:'authenticateResult', success, expiry, reseller, createdAt, keyDuration, publicId, licenses, stableHvAvailable}</code>. On success the JS runs <code>populateMain(...)</code> + <code>buildCleanerGrid()</code> + <code>showPage('page-main')</code>.</p>
+    <p>That success <strong>depends entirely on the server</strong>: offline, the loader never receives <code>authenticateResult:success</code>.</p>
+
+    <h2 id="s7"><span class="n">07</span>Payloads: the embedded kernel drivers</h2>
+    <p><code>.rdata</code> contains <strong>two embedded NATIVE PE64 images (drivers)</strong>:</p>
+    <table>
+      <thead><tr><th>Real name</th><th>Identity</th><th>File offset</th><th>RVA</th><th>Size</th><th>Subsystem</th><th>SizeOfImage</th></tr></thead>
+      <tbody>
+        <tr><td>ThrottleStop.sys</td><td>TechPowerUp &ldquo;Low-Level Driver&rdquo;</td><td>0xCEFCF0</td><td>0xCF0CF0</td><td>22,528</td><td>NATIVE</td><td>0xD000</td></tr>
+        <tr><td>EneIo64.sys</td><td>ENE/G.SKILL WINIO</td><td>0xDC56E0</td><td>0xDC66E0</td><td>8,192</td><td>NATIVE</td><td>0x7000</td></tr>
+      </tbody>
+    </table>
+    <blockquote><p><strong>Note:</strong> the extracted files are written out under their <strong>real names</strong>, <code>dec\embedded\ThrottleStop.sys</code> and <code>dec\embedded\EneIo64.sys</code>.</p></blockquote>
+
+    <h3><span class="n">7.1</span><code>ThrottleStop.sys</code> &mdash; TechPowerUp &ldquo;Low-Level Driver&rdquo; v3.0.0.0</h3>
+    <p>Binary identities:</p>
+    <ul>
+      <li><strong>VS_VERSION_INFO:</strong> <code>ProductName</code> = <code>FileDescription</code> = <strong>&ldquo;Low-Level Driver&rdquo;</strong>, <code>FileVersion</code>/<code>ProductVersion</code> = <strong>3.0.0.0</strong>, <code>LegalCopyright</code> = <code>"Copyright 2004-2020 (c). All rights reserved."</code>, <code>Translation</code> <code>040904b0</code>.</li>
+      <li><strong>Debug PDB:</strong> <code>Driver.pdb</code>; source file <code>ioctl.c</code>.</li>
+      <li><strong>Compile date:</strong> <code>Oct  6 2020 22:34:27</code> (the string <code>"Driver compiled at %s on %s"</code>; PE timestamp = 2020-10-06 14:34:27 UTC).</li>
+      <li><strong>Imports (53)</strong> &mdash; a very distinctive cluster: <code>MmMapIoSpace</code>, <code>MmUnmapIoSpace</code>, <code>MmMapLockedPagesSpecifyCache</code>, <code>MmUnmapLockedPages</code>, <code>MmBuildMdlForNonPagedPool</code>, <code>IoAllocateMdl</code>, <code>HalGetBusDataByOffset</code>, <code>HalSetBusDataByOffset</code>, <code>IoIsWdmVersionAvailable</code>, <code>_vsnwprintf</code>, <code>_wcsnicmp</code>, <code>wcschr</code>, <code>wcsrchr</code>, and the whole <em>security descriptor</em> set (<code>SeCaptureSecurityDescriptor</code>, <code>SeExports</code>, <code>RtlCreateSecurityDescriptor</code>, <code>RtlSetDaclSecurityDescriptor</code>, <code>RtlAddAccessAllowedAce</code>, <code>RtlAbsoluteToSelfRelativeSD</code>, <code>RtlLengthSid</code>, <code>ObOpenObjectByPointer</code>, <code>ZwSetSecurityObject</code>). <strong>This list matches, in order, the <code>throttlestop.sys</code> entry in LOLDrivers</strong> (<code>SHA256 16f83f056177c4ec24c7e99d01ca9d9d6713bd0497eeedb777a3ffefa99c97f0</code>).</li>
+      <li>Strings: <code>"Maximum number of memory mappings reached"</code>, <code>"MmMapIoSpace failed"</code>, <code>"Created device: %S"</code>, <code>"Created link: %S -&gt; %S"</code>, <code>IoIsWdmVersionAvailable</code>, <code>HAL.dll</code>, <code>\Registry\Machine\System\CurrentControlSet\Control\Class</code>, GUID <code>{%08X-%04X-%04X-%02X%02X-...}</code>.</li>
+    </ul>
+    <p><strong>Identification:</strong> this is the <strong><code>ThrottleStop.sys</code></strong> driver from <strong>TechPowerUp</strong> (the GPU utility family: <em>ThrottleStop / TRIXX / GPU-Z</em>), signed by TechPowerUp LLC (EV). It is a <strong>known vulnerable driver</strong>: it exposes arbitrary <strong>physical-memory</strong> R/W through an IOCTL &mdash; <strong>CVE-2025-7771</strong> (ThrottleStop.sys), listed in <strong>LOLDrivers</strong> and in <strong>KDU</strong>'s provider table (TechPowerUp / ThrottleStop). This loader reuses it (recompiled/renamed &mdash; hence the unsigned <code>Driver.pdb</code>) as a physical-memory primitive.</p>
+    <p>Xrefs to its use in the loader (a copy of the blob): RVA <code>0x896C19</code> / <code>0x8994CC</code> (<code>memcpy 0xC428</code> bytes), <code>0x89D05E</code>.</p>
+
+    <h3><span class="n">7.2</span><code>EneIo64.sys</code> &mdash; ENE/G.SKILL &ldquo;WINIO&rdquo; (BYOVD)</h3>
+    <ul>
+      <li>Debug PDB: <code>d:\winglckio_20180320\amd64\EneIo.pdb</code> (build 2018-03-20).</li>
+      <li>Identified as <strong><code>EneIo64.sys</code></strong> (ENE Technology / G.SKILL Trident Z Lighting Control), a derivative of the historic <strong>WinIO</strong> (<code>WinIoDispatch</code>, <code>WinIoUnload</code>, <code>\Device\EneIo</code>, <code>\DosDevices\EneIo</code>).</li>
+      <li>A <strong>known vulnerable driver</strong>: <strong>CVE-2020-12446</strong>. IOCTLs:
+        <ul>
+          <li><code>IOCTL_WINIO_MAPPHYSTOLIN</code> (<code>0x80102040</code>) &rarr; <strong>map physical memory</strong> into user mode (<code>ZwMapViewOfSection</code>).</li>
+          <li><code>IOCTL_WINIO_UNMAPPHYSADDR</code> (<code>0x80102044</code>) &rarr; unmap.</li>
+          <li><code>IOCTL_WINIO_READMSR/WRITEMSR</code>, <code>READPORT/WRITEPORT</code> &rarr; MSR / I/O ports.</li>
+        </ul>
+      </li>
+      <li>Device: <code>\\.\EneIo</code> (the loader opens it and carries the string <code>"[-] Could not load EneIo: 0x%x"</code>).</li>
+      <li>Listed in <strong>LOLDrivers</strong>; blocked by Microsoft's <em>Vulnerable Driver Blocklist</em>.</li>
+    </ul>
+    <p>Xrefs to its use: RVA <code>0x85D653</code> (<code>memcpy 0x4448</code> bytes), <code>0xB180A2</code>.</p>
+    <blockquote><p><strong>BYOVD attack chain:</strong> <code>HWIDLoader.exe</code> loads <code>EneIo64.sys</code> (a signed, vulnerable driver) and opens <code>\\.\EneIo</code>; using the physical-memory R/W it provides, it <strong>manually maps <code>ThrottleStop.sys</code></strong> (unsigned) into the kernel &mdash; the same primitive as <code>kdmapper</code>. With <code>ThrottleStop.sys</code> loaded it gets <strong>arbitrary kernel / physical-memory R/W</strong>, which it uses to disable protections (anti-cheat/HVCI) and apply the HWID spoofing.</p></blockquote>
+
+    <h3><span class="n">7.3</span>What is <strong>not</strong> embedded</h3>
+    <p>There are no cheat blobs, HV blobs or seeds inside the binary: all of that is <strong>downloaded from the server</strong> (<code>getHvBlob</code>, <code>getBypass</code>, <code>getLicenseBlob</code>, <code>generateSeed</code>). There is no local on-disk cache.</p>
+
+    <h3><span class="n">7.4</span>Other attached files</h3>
+    <ul>
+      <li><code>.data1</code> (15 B, ASCII): <code>|#l6tLb+q4x|p&amp;|</code></li>
+      <li><code>.data2</code> (27 B, binary): <code>49 53 05 5D 5A 04 68 51 57 50 48 5B 57 3C 50 00 06 18 52 03 6E 16 46 04 47 02 49</code></li>
+    </ul>
+    <p>Neither is referenced by name anywhere in the executable (possibly markers or config).</p>
+
+    <h2 id="s8"><span class="n">08</span>Licence / auth bypass (the patch)</h2>
+    <p><strong>Goal:</strong> skip the licence screen.</p>
+    <p><strong>Chosen strategy (minimally invasive):</strong> inject a small script at the end of <code>app.js</code> that, once the DOM is ready, runs the &ldquo;successful auth&rdquo; path directly with fabricated data:</p>
+    <span class="filename">app.js &mdash; injected tail</span>
+<pre><code><span class="tok-c">/* torete76 */</span>;
+window.<span class="tok-fn">addEventListener</span>(<span class="tok-s">'DOMContentLoaded'</span>, <span class="tok-k">function</span> () {
+  <span class="tok-fn">setTimeout</span>(<span class="tok-k">function</span> () {
+    <span class="tok-k">try</span> {
+      appState.wrongAttempts = <span class="tok-n">0</span>;
+      appState.stableHvAvailable = <span class="tok-k">false</span>;
+      appState.licenses = [];
+      <span class="tok-fn">populateMain</span>(<span class="tok-n">4102444800000</span>, <span class="tok-s">'torete76'</span>, Date.<span class="tok-fn">now</span>(), <span class="tok-n">31536000000</span>, <span class="tok-s">'torete76'</span>);
+      <span class="tok-fn">buildCleanerGrid</span>();
+      <span class="tok-fn">showPage</span>(<span class="tok-s">'page-main'</span>);
+    } <span class="tok-k">catch</span> (e) { console.<span class="tok-fn">error</span>(e); }
+  }, <span class="tok-n">800</span>);
+});</code></pre>
+    <p>Implementation details:</p>
+    <ol>
+      <li><strong>Keep the exact size.</strong> Resource #102 had no slack (resource #103 <code>data.pak</code> starts immediately after it), so rather than relocating the resource (which broke the PE &mdash; see 8.1), the <strong>self-defence block</strong> (bytes <code>579..1407</code>, 828 B) was <strong>deleted</strong> and <strong>replaced by the bypass padded with spaces</strong> up to the same 828 B &rarr; identical content size (199,804 B) &rarr; same PKCS#7 padding &rarr; <strong>same ciphertext size (0x30C80)</strong>.</li>
+      <li><strong>Re-encrypt</strong> with the same key/IV (AES-256-CBC) and <strong>write in place</strong> at <code>0xEBD860</code>. No PE header was touched; the patched file keeps a size and structure identical to the original (every difference lands inside the ciphertext of resource #102).</li>
+      <li><strong>Author's mark:</strong> <code>torete76</code> (comment + <code>reseller</code> + <code>publicId</code>).</li>
+    </ol>
+    <p><strong>Result:</strong> <code>HWIDLoader_patched.exe</code> &mdash; when the WebView loads, after about 0.8 s it jumps straight to the main page without asking for a licence.</p>
+
+    <h3><span class="n">8.1</span>Discarded attempt (it broke startup)</h3>
+    <p>The first attempt <strong>relocated</strong> resource #102 to the end of the file (extending <code>.reloc</code>, <code>SizeOfImage</code>, and repointing the <code>IMAGE_RESOURCE_DATA_ENTRY</code>). Decryption verified correctly, but Windows rejected the executable (&ldquo;This app can't run on your PC&rdquo;) because the image was inconsistent (the extended <code>SizeOfRawData</code> landed past EOF). It was dropped in favour of the in-place method of section 08.</p>
+
+    <h3><span class="n">8.2</span>Limits of the bypass</h3>
+    <p>The patch only unlocks the <strong>UI shell</strong> offline. Real features (cheats, HV, seed, cleaners) require the <strong>Cap'n Proto RPC</strong> against the server &rarr; with no network those actions fail even though the UI is reachable.</p>
+
+    <h3><span class="n">8.3</span>The &ldquo;spoof&rdquo; button crashes (with a dump) &mdash; and the native fix</h3>
+    <p>Pressing the <strong>spoof</strong> button (e.g. <em>Fortnite</em>) with the fabricated session makes the loader close and leave a <code>loader_crash.dmp</code> in its folder. Analysing the minidump (<code>MDMP</code>):</p>
+    <ul>
+      <li><strong>Not an access violation:</strong> the exception is <code>ExceptionCode = 0xE06D7363</code> (the MSVC C++ class, <code>"\xE0msc"</code>), with <code>Rip = KERNELBASE!RaiseException</code>.</li>
+      <li><strong>Throw site:</strong> <code>HWIDLoader_patched.exe+0xB8B380</code> (a vtable slot, <code>0xCFE258</code>), which builds the exception object and calls <code>__CxxThrowException</code> (<code>0xC2C7D0</code>, 247 references = it is the C++ RTL).</li>
+      <li><strong>Type:</strong> the exception comes from the <strong>Cap'n Proto / kj</strong> runtime (neighbouring RTTI: <code>?AUCanceledException@kj@@</code>, <code>?AUCleanShutdownException@&hellip;@kj@@</code>, <code>OwnedBundle&hellip;capnp&hellip;</code> templates) next to <code>nlohmann::json 3.12.0</code>. The <code>LoaderServiceImpl.cpp</code> strings (<code>GetOffsets</code>, <code>PreResolveOffsets</code>, <code>ExtraCleanup</code>, <strong><code>WaitForSpooferThreads</code></strong>, <code>ReportDetection</code>) and the logger message <code>"Rethrowing unknown exception in logger"</code> place the failure in the loader service.</li>
+      <li><strong>Origin:</strong> the JS payload <code>loadSpoofer</code> (an action name present in memory and absent from the .exe, i.e. sent by the WebView) reaches the native handler, which calls the RPC (<code>getBypass</code>/<code>getSpooferSeed</code>/<code>requestSpooferFixes</code>/<code>getHvBlob</code>). With no valid session/server, a <code>kj::Exception</code> is thrown and <strong>nobody catches it</strong> &rarr; it reaches the unhandled filter.</li>
+      <li>The loader itself installs <code>SetUnhandledExceptionFilter</code> and imports <code>MiniDumpWriteDump</code>/<code>ImageNtHeader</code>/<code>ImageDirectoryEntryToData</code> (dbghelp) &rarr; <strong>it is the one writing the .dmp</strong> before dying.</li>
+    </ul>
+    <p><strong>The native &ldquo;nothrow&rdquo; patch:</strong> at <code>0xB8B3B3</code> (the failure branch of the method at <code>0xB8B380</code>) the <em>build-object + <code>__CxxThrowException</code></em> sequence (38 B) is replaced with a clean return:</p>
+<pre><code><span class="tok-n">0xB8B3B3</span>  <span class="tok-k">31 C0</span>              xor eax, eax
+<span class="tok-n">0xB8B3B5</span>  <span class="tok-k">48 8B 5C 24 70</span>     mov rbx, [rsp+0x70]
+<span class="tok-n">0xB8B3BA</span>  <span class="tok-k">48 83 C4 60</span>        add rsp, 0x60
+<span class="tok-n">0xB8B3BE</span>  <span class="tok-k">5F</span>                 pop rdi
+<span class="tok-n">0xB8B3BF</span>  <span class="tok-k">C3</span>                 ret</code></pre>
+    <p>(The rest, up to <code>0xB8B3DF</code>, is filled with <code>CC</code>.) It is <strong>PE-safe</strong>: it only touches <code>.text</code>, changes no headers and no file size, and respects the original stack frame (<code>push rdi; sub rsp,0x60</code>). So when the RPC cannot complete the operation, the method <strong>returns 0 instead of throwing</strong>, and the process no longer crashes or writes a <code>.dmp</code>.</p>
+    <blockquote><p><strong>Note:</strong> this is a robustness mitigation, not real functionality &mdash; the spoof operation remains impossible offline. Should other <em>throw sites</em> appear in different domains, the same treatment would apply.</p></blockquote>
+
+    <h3><span class="n">8.4</span>The UI asks for a licence again (&ldquo;expired&rdquo;) &mdash; and how it is neutralised</h3>
+    <p>After the nothrow patch of 8.3 the process no longer crashes, but triggering a spoof action makes the interface <strong>return to the licence page</strong> with the text <em>&ldquo;Your session has expired. Please log in again.&rdquo;</em> Cause: because the RPC now <strong>returns</strong> instead of throwing, the native side replies to the WebView with <code>{action:"sessionExpired"}</code>. The message handler in <code>app.js</code> contains:</p>
+    <span class="filename">app.js &mdash; the sessionExpired case</span>
+<pre><code><span class="tok-k">case</span> <span class="tok-s">'sessionExpired'</span>: {
+  _sessionLocked = <span class="tok-k">true</span>;
+  _pingTimer &amp;&amp; (<span class="tok-fn">clearInterval</span>(_pingTimer), _pingTimer = <span class="tok-k">null</span>);
+  <span class="tok-fn">showPage</span>(<span class="tok-s">'page-auth'</span>),
+  <span class="tok-fn">setMsg</span>(<span class="tok-s">'auth-msg'</span>, <span class="tok-s">'Your session has expired. Please log in again.'</span>, <span class="tok-s">'error'</span>),
+  document.<span class="tok-fn">getElementById</span>(<span class="tok-s">'auth-btn'</span>).disabled = <span class="tok-k">false</span>;
+  <span class="tok-k">break</span>;
+}</code></pre>
+    <p>And <code>showPage()</code> blocks any navigation other than <code>page-auth</code> as soon as <code>_sessionLocked</code> is true:</p>
+<pre><code><span class="tok-k">function</span> <span class="tok-fn">showPage</span>(id){ <span class="tok-k">if</span>(_sessionLocked &amp;&amp; id!==<span class="tok-s">'page-auth'</span>) <span class="tok-k">return</span>; ... }</code></pre>
+    <p><strong>Solution (same in-place method as section 08):</strong> the entire body of the <code>case</code> (315 B) was replaced with <code>case'sessionExpired':{break;}</code> <strong>padded with spaces</strong> to the same length &rarr; content 199,804 B &rarr; same ciphertext <code>0x30C80</code>, written in place at <code>0xEBD860</code>. The <code>sessionExpired</code> event is now ignored and the UI <strong>stays on <code>page-main</code></strong> (it neither locks nor asks for a licence). The other notices (<code>pingResult</code>, <code>serverUnreachable</code>, etc.) do not navigate and are left untouched.</p>
+    <blockquote><p>The resulting binary is <code>HWIDLoader_patched_nosession.exe</code>. It is rebuilt on top of the already-patched executable (bypass from section 08 + nothrow from 8.3); again, only the ciphertext of resource #102 changed.</p></blockquote>
+
+    <h3><span class="n">8.5</span>The &ldquo;EXPIRED&rdquo; label when opening a product (fabricated licences)</h3>
+    <p>With 8.4 the app no longer returns to the licence screen, but opening a product (e.g. <em>products &rarr; Fortnite</em>) still showed <strong>EXPIRED</strong> in the panel, with an absurd expiry date (year ~131000). These were two problems of data missing from the fabricated session:</p>
+    <ol>
+      <li><strong>INJECT button.</strong> In <code>populateMain()</code> (<code>app.js</code>), <code>_0xd8ad8f = isActive(appState.expiry)</code> and <code>_0x5c270f = appState.licenses.length &gt; 0</code> are computed; the button only renders <code>INJECT</code> if <strong>both</strong> are true, otherwise it shows <code>&lt;span class="shimmer-text-dark"&gt;EXPIRED&lt;/span&gt;</code>. The bypass set <code>appState.licenses = []</code> &rarr; always <code>EXPIRED</code>.</li>
+      <li><strong>Product selection.</strong> <code>hasLicense(producto) = appState.licenses.some(l =&gt; l.product === producto &amp;&amp; l.expiry &gt; now)</code>; with an empty list, selecting a product (which requires <code>hasLicense('spoofer')</code>) has no licence.</li>
+      <li><strong>Absurd date.</strong> <code>isActive(x) = x &amp;&amp; x*1000 &gt; Date.now()</code> &rarr; the expiry is in <strong>seconds</strong>. The bypass passed <code>4102444800000</code> (year ~131000); with <code>4102444800</code> it lands in 2100.</li>
+    </ol>
+    <p><strong>Solution (v3):</strong> in the same self-defence slot, fabricated licences and a reasonable expiry are injected (the licence object is <code>{product, expiry}</code> &mdash; indices <code>0x3de</code> and <code>0x28a</code> in the obfuscated JS):</p>
+    <span class="filename">app.js &mdash; bypass v3</span>
+<pre><code><span class="tok-c">/* torete76 */</span>;
+window.<span class="tok-fn">addEventListener</span>(<span class="tok-s">'DOMContentLoaded'</span>, <span class="tok-k">function</span> () {
+  <span class="tok-fn">setTimeout</span>(<span class="tok-k">function</span> () {
+    <span class="tok-k">try</span> {
+      <span class="tok-k">var</span> E = <span class="tok-n">4102444800</span>; <span class="tok-c">// 2100-01-01 (seconds)</span>
+      appState.wrongAttempts = <span class="tok-n">0</span>;
+      appState.stableHvAvailable = <span class="tok-k">false</span>;
+      appState.licenses = [
+        { product: <span class="tok-s">'spoofer'</span>,  expiry: E },
+        { product: <span class="tok-s">'rust'</span>,     expiry: E },
+        { product: <span class="tok-s">'fortnite'</span>, expiry: E }
+      ];
+      <span class="tok-fn">populateMain</span>(E, <span class="tok-s">'torete76'</span>, Math.<span class="tok-fn">floor</span>(Date.<span class="tok-fn">now</span>() / <span class="tok-n">1000</span>), <span class="tok-n">31536000</span>, <span class="tok-s">'torete76'</span>);
+      <span class="tok-fn">buildCleanerGrid</span>();
+      <span class="tok-fn">showPage</span>(<span class="tok-s">'page-main'</span>);
+    } <span class="tok-k">catch</span> (e) { console.<span class="tok-fn">error</span>(e); }
+  }, <span class="tok-n">800</span>);
+});</code></pre>
+    <p>Same in-place mechanism: only the ciphertext of #102 changes. Result in <code>HWIDLoader_patched_v3.exe</code>.</p>
+
+    <h2 id="s9"><span class="n">09</span>Indicators of compromise</h2>
+    <ul>
+      <li>Domains: <code>support.loader.pub</code>, <code>obsidian.pub</code>, <code>status.obsidian.pub</code>.</li>
+      <li>Telegram: <code>t.me/obsidianpub</code>.</li>
+      <li>WebView2 virtual host: <code>https://appassets.local/index.html</code>.</li>
+      <li>Internal project: <strong><code>ReworkedHV</code></strong> (build paths <code>E:\ReworkedHV\Auth\...\HWIDLoader\src\Sources\main.cpp</code>, <code>ClientServices\LogService.cpp</code>, <code>E:\ReworkedHV\tools\deps\capnproto\...</code>).</li>
+      <li>Embedded drivers: <strong><code>ThrottleStop.sys</code></strong> (TechPowerUp &ldquo;Low-Level Driver&rdquo; v3.0.0.0, PDB <code>Driver.pdb</code>, CVE-2025-7771) and <strong><code>EneIo64.sys</code></strong> (ENE/G.SKILL WINIO, PDB <code>d:\winglckio_20180320\amd64\EneIo.pdb</code>, CVE-2020-12446).</li>
+      <li>Loader string: <code>"[-] Could not load EneIo: 0x%x"</code> and device <code>\\.\EneIo</code>.</li>
+      <li>Crash dump file: <strong><code>loader_crash.dmp</code></strong> (written by the loader itself via <code>MiniDumpWriteDump</code>).</li>
+    </ul>
+
+    <h3><span class="n">9.1</span>Hashes SHA-256</h3>
+    <table>
+      <thead><tr><th>Artefact</th><th>SHA-256</th></tr></thead>
+      <tbody>
+        <tr><td>HWIDLoader.exe (original)</td><td class="hash">4ce0beac926c1ab88d32b44fc1ccdc6c31f7f5867370749f9ca1b9f77038b5fc</td></tr>
+        <tr><td>HWIDLoader_patched.exe (bypass <code>torete76</code>, before nothrow)</td><td class="hash">bd982ce061d1351f572ee7dad289e7e46ab9958c38725fa5ca5b5b243882fccd</td></tr>
+        <tr><td>HWIDLoader_patched.exe (bypass + nothrow patch 8.3)</td><td class="hash">6a8e19d7362c6f353cf7a60299ec6e7126a3cdf44df9002227d2b163b2dc7e3c</td></tr>
+        <tr><td>HWIDLoader_patched_nosession.exe (bypass + nothrow + no-<code>sessionExpired</code> 8.4)</td><td class="hash">2733b57cb94b63e51f886d447e2d81963c2a33f7dc2349679669eebe3d0fba3a</td></tr>
+        <tr><td>HWIDLoader_patched_v3.exe (+ fabricated licences 8.5)</td><td class="hash">035e68353faaf95dc549b6904c643aa9a872c85123c45a7c402534a2cd2d07c9</td></tr>
+        <tr><td>app.js</td><td class="hash">410abc008805dfc293a2bfd3ef97328277c5750fd3ce0aaadee0ebc593ae248f</td></tr>
+        <tr><td>index.html</td><td class="hash">e178587b9bf6b97738b23144884c543fea057f612c633dff5e8653f7fee89f77</td></tr>
+        <tr><td>data.pak</td><td class="hash">f32c388ada977433d61ce75bbe23b629ca90bb1ea61c140da969efa88ef7e28a</td></tr>
+        <tr><td>ThrottleStop.sys (TechPowerUp Low-Level Driver)</td><td class="hash">70ccadf79f0b4fafed50640b77aa62e7ddf39840d8f1219e367ce0d2aa4bfba9</td></tr>
+        <tr><td>EneIo64.sys (ENE/G.SKILL WINIO)</td><td class="hash">da6ffaaec965e5c07ab422d0ae7baed23c1be66c35fd09a349773f428734fcdf</td></tr>
+        <tr><td>.data1</td><td class="hash">c5a0c7dc5d04afd8284d4585163b6370f1d79d13f425b3b3225d00fb68858875</td></tr>
+        <tr><td>.data2</td><td class="hash">3c3deb7805a2563fddd51a0865b676ba854b5771d2048b415040e65fb65dccf0</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="s10"><span class="n">10</span>Conclusion</h2>
+    <p><code>HWIDLoader.exe</code> combines three layers: a robust <strong>web UI</strong> inside WebView2, a proprietary <strong>binary RPC protocol</strong> for everything sensitive, and a <strong>BYOVD chain</strong> with two embedded kernel drivers (<code>EneIo64.sys</code> + <code>ThrottleStop.sys</code>) to obtain arbitrary physical-memory / kernel R/W without a signature. The local protections (AES assets, obfuscated JS, obfuscated native strings) are <strong>defeatable by static analysis</strong>, because the AES key is a constant and the JS obfuscation is reversible. However, the real functionality is <strong>server-side</strong>, so a purely local bypass only unlocks the interface.</p>
+
+    <blockquote><p><em>&mdash; End of teardown.</em></p></blockquote>
+  </article>
+
+  <div class="end">
+    <b>&#10003; Teardown complete.</b> Decrypt the shell &rarr; read the UI &rarr; map the RPC &rarr; follow the drivers. All of it without ever running the sample.
+  </div>
+
+  <footer>
+    <span class="tag">// RE</span> &mdash; HWIDLoader / OBSIDIAN &middot; by <a href="../index.html">torete</a> &middot; <em>static analysis only</em>
+  </footer>
+
+</div>
+
+<script src="blog.js"></script>
+<script>
+  // Table-of-contents highlight for this article (blog.js only drives .partdiv navigation).
+  (function () {
+    const links = [...document.querySelectorAll(".series ol a")];
+    const targets = links
+      .map((a) => document.querySelector(a.getAttribute("href")))
+      .filter(Boolean);
+    if (!links.length || !targets.length) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((e) => {
+          if (!e.isIntersecting) return;
+          const i = targets.indexOf(e.target);
+          links.forEach((a, j) => a.parentElement.classList.toggle("active", i === j));
+        });
+      },
+      { rootMargin: "-84px 0px -70% 0px" }
+    );
+    targets.forEach((t) => io.observe(t));
+  })();
+</script>
+</body>
+</html>
